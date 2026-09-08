@@ -421,7 +421,52 @@ def setup_workspace(**kwargs):
                     "id": "ai_placeholder",
                     "type": "paragraph",
                     "data": {
-                        "text": "💬 Live AI chat is loading below...",
+                        "text": "💬 Live AI chat is loading below... (ask by typing or 🎤 voice)",
+                        "col": 12,
+                    },
+                },
+                {
+                    "id": "ai_help_header",
+                    "type": "header",
+                    "data": {"text": "❓ How to use the AI Assistant", "col": 12},
+                },
+                {
+                    "id": "ai_help_basics",
+                    "type": "paragraph",
+                    "data": {
+                        "text": "📊 DATA QUERIES — ask anything about your ERP data: \u2018How many items?\u2019 \u2022 \u2018How many customers?\u2019 \u2022 \u2018Total stock?\u2019 \u2022 \u2018Unpaid invoices?\u2019 \u2022 \u2018Show me all items\u2019 \u2022 \u2018Search for pump springs\u2019 — the AI answers with REAL numbers from your database.",
+                        "col": 12,
+                    },
+                },
+                {
+                    "id": "ai_help_workflows",
+                    "type": "paragraph",
+                    "data": {
+                        "text": "📦 WORKFLOWS — create documents in plain language: \u2018Spring shipment arrived from ABC Traders, vehicle LEA-4521, 500 pcs pump springs\u2019 (records goods receipt) \u2022 \u2018Issue 10 pump springs to Engr Ali in Production\u2019 (stock issue) \u2022 \u2018Make invoice for ABC Traders, 2 pump springs @ 500\u2019 (sales invoice + print link) \u2022 \u2018Create item named Steel Rod price 100\u2019 \u2022 \u2018Create customer named XYZ Corp\u2019. The AI asks for any missing details, creates documents as DRAFT for your review, and gives print/PDF links.",
+                        "col": 12,
+                    },
+                },
+                {
+                    "id": "ai_help_setup",
+                    "type": "paragraph",
+                    "data": {
+                        "text": "🛠 SETUP & GUIDANCE — ask how-to questions: \u2018How do I set up a new warehouse?\u2019 \u2022 \u2018What do I need to make a sales invoice?\u2019 \u2022 \u2018How does the manufacturing BOM work?\u2019 \u2022 \u2018Help me set up a new ERP system\u2019 \u2022 \u2018What taxes apply in Pakistan?\u2019 — full ERPNext knowledge built in.",
+                        "col": 12,
+                    },
+                },
+                {
+                    "id": "ai_help_voice",
+                    "type": "paragraph",
+                    "data": {
+                        "text": "🎤 VOICE — click 🎤 in the chat, speak, stop — your words are typed into the input (needs HTTPS). 🔊/🔇 button toggles spoken answers (Piper TTS, English & Urdu). Voice works on https://spi.local or localhost.",
+                        "col": 12,
+                    },
+                },
+                {
+                    "id": "ai_help_docs",
+                    "type": "paragraph",
+                    "data": {
+                        "text": "📚 FULL DOCS: see README.md in the erp_ai app folder for complete API reference, setup, troubleshooting and debugging guide.",
                         "col": 12,
                     },
                 },
