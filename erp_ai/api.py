@@ -10,6 +10,7 @@ import requests
 from frappe.utils import fmt_money
 
 from erp_ai.mcp.server import FrappeMCP
+from erp_ai.knowledge.erpnext_kb import get_knowledge_excerpt
 OLLAMA_URL = "http://localhost:11434/api/generate"
 DEFAULT_MODEL = "qwen2.5:1.5b"
 
@@ -605,6 +606,23 @@ def _process_with_mcp(prompt, session, user, model):
     if any(kw in prompt_lower for kw in ["print", "pdf", "receipt", "challan"]):
         return _handle_print(prompt, mcp)
     
+    # WORKFLOW: shipment/goods arrival
+    if any(kw in prompt_lower for kw in ["shipment", "shipment arrived", "goods received", "goods arrived",
+                                          "consignment", "material received", "samad ki", "aagai",
+                                          "pump spring shipment", "grn"]):
+        return _handle_shipment_nl(prompt, mcp)
+
+    # WORKFLOW: stock issue to department/person
+    if any(kw in prompt_lower for kw in ["issue stock", "issue material", "material issue",
+                                          "issue to", "transfer stock", "jari karein",
+                                          "department ko dein", "consume"]):
+        return _handle_issue_nl(prompt, mcp)
+
+    # WORKFLOW: sales invoice creation via natural language
+    if any(kw in prompt_lower for kw in ["make invoice", "banaiye invoice", "generate invoice",
+                                          "invoice bana", "bill customer"]):
+        return _handle_invoice_nl(prompt, mcp)
+
     # Count queries
     if any(kw in prompt_lower for kw in ["how many", "count of", "number of", "kitne", "total"]):
         return _handle_count_query(prompt, mcp)
@@ -808,6 +826,154 @@ def _handle_search_query(prompt, mcp):
     return f"Search results for '{query}':\n" + "\n".join(lines)
 
 
+
+def _handle_shipment_nl(prompt, mcp):
+    import json as _json
+    """Parse natural language shipment text and create receipt workflow."""
+    import re
+    text = prompt
+    # Extract supplier: after 'from' or 'supplier'
+    supplier = None
+    m = re.search(r'(?:from|supplier|vendor)\s+([A-Za-z0-9 .&-]{2,40}?)(?:,|\.|vehicle|arriv|$)', text, re.I)
+    if m:
+        supplier = m.group(1).strip()
+    # Extract vehicle
+    vehicle = None
+    m = re.search(r'(?:vehicle|truck|van|no\.|number)\s*[:\-]?\s*([A-Z]{2,4}[- ][0-9]{3,4})', text, re.I)
+    if m:
+        vehicle = m.group(1).strip()
+    # Extract items with qty: '500 pcs spring', 'pump springs 500'
+    items = []
+    items = []
+    # Pattern: "500 pcs pump springs" or "500 pump springs"
+    for m in re.finditer(r'([0-9][0-9,.]*)\s*(?:pcs|pieces|nos|units|kg|boxes|sets)?\s+([A-Za-z][A-Za-z0-9 -]{2,40}?)(?=\s+(?:arriv|from|to|in|,|\.)|,|\.|$)', text, re.I):
+        name = m.group(2).strip()
+        try:
+            q = float(m.group(1).replace(',', ''))
+        except (ValueError, TypeError):
+            q = None
+        if name and q:
+            items.append({"item_name": name, "qty": q})
+    # Fallback: bare item names without qty
+    if not items:
+        for m in re.finditer(r'\b((?:pump\s+)?springs?|bolts?|nuts?|bearings?|gaskets?|seals?|valves?|pumps?)\b', text, re.I):
+            items.append({"item_name": m.group(1).strip(), "qty": None})
+            items.append({"item_name": name, "qty": q})
+    
+    missing = []
+    if not supplier: missing.append('supplier (who sent it?)')
+    if not items: missing.append('items + quantities (what arrived & how many?)')
+    
+    if missing:
+        return ("I can record this shipment for you. Please provide:\n" +
+                "\n".join("- " + x for x in missing) +
+                "\n\nAlso tell me (optional): vehicle number, which store (Raw Material Store / Technical Store / Finished Goods), rate/price, and any remarks.\n\nExample: 'Spring shipment arrived from ABC Traders, vehicle LEA-4521, 500 pcs pump springs to Raw Material Store'")
+    
+    # Resolve item names to item codes (search DB, fallback to generated code)
+    for it in items:
+        nm = it.get("item_name", "")
+        found = mcp.call_tool("search_documents", {"query": nm, "doctype": "Item", "limit": 1})
+        res = found.get("results", [])
+        if res:
+            it["item_code"] = res[0]["name"]
+        else:
+            it["item_code"] = nm.replace(" ", "-").upper()
+
+    # Build workflow data
+    data = {"supplier": supplier, "vehicle_no": vehicle, "items": items, "remarks": text[:200]}
+    result = workflow_shipment_receipt(_json.dumps(data))
+    if "error" in result:
+        return "Could not record: " + result["error"]
+    steps = "\n".join("- " + s for s in result.get("steps", []))
+    entry = result.get("entry", {})
+    return ("✅ Shipment recorded as DRAFT:\n" + steps +
+            "\n\nDocument: " + entry.get("doctype", "") + " " + entry.get("name", "") +
+            "\nReview and submit it to add stock. Say 'submit " + entry.get("name", "") + "' to confirm.")
+
+
+def _handle_issue_nl(prompt, mcp):
+    import json as _json
+    """Parse natural language stock issue text."""
+    import re
+    text = prompt
+    qty = None
+    m = re.search(r'(?:issue|transfer|jari)\s+([0-9,.]+)', text, re.I)
+    if m:
+        qty = float(m.group(1).replace(',', ''))
+    item = None
+    m = re.search(r'(?:issue|transfer|jari)[^a-z]*([0-9,.]+)\s*(?:pcs|nos|units|kg)?\s*([A-Za-z][A-Za-z0-9 -]{2,40}?)(?:\s+to\s+|,|\.|$)', text, re.I)
+    if m and m.group(2):
+        item = m.group(2).strip()
+    person = None
+    m = re.search(r'(?:to|for)\s+(?:mr\.|mr\s|engr\.|engr\s)?([A-Za-z]+(?:\s[A-Za-z]+)?)', text, re.I)
+    if m:
+        person = m.group(1).strip()
+    
+    missing = []
+    if not item: missing.append('item name')
+    if not qty: missing.append('quantity')
+    if not person: missing.append('person/department to issue to')
+    
+    if missing:
+        return ("To issue stock, please provide:\n" + "\n".join("- " + x for x in missing) +
+                "\n\nExample: 'Issue 10 pump springs from Raw Material Store to Engr. Ali (Production)'")
+    
+    # Find item in DB (fuzzy)
+    found = mcp.call_tool("search_documents", {"query": item, "doctype": "Item", "limit": 3})
+    results = found.get("results", [])
+    if not results:
+        return "Item '%s' not found in system. Please check the name." % item
+    item_code = results[0]["name"]
+    
+    data = {"item_code": item_code, "qty": qty, "issue_type": "Material Issue",
+            "issued_to": person, "remarks": text[:200]}
+    result = workflow_stock_issue(_json.dumps(data))
+    if "error" in result:
+        return "Could not issue: " + result["error"]
+    return "✅ Stock Issue created (DRAFT): %s\nPurpose: %s\n%s\nSubmit to confirm the movement." % (
+        result.get("name"), result.get("purpose"), result.get("next", ""))
+
+
+def _handle_invoice_nl(prompt, mcp):
+    import json as _json
+    """Parse natural language invoice creation."""
+    import re
+    text = prompt
+    customer = None
+    m = re.search(r'(?:for|to|customer|client)\s+([A-Za-z0-9 .&-]{2,40}?)(?:,|\.|items?|$|\d)', text, re.I)
+    if m:
+        customer = m.group(1).strip()
+    # items: '2 pump springs @ 500', '10 bolts @ 50'
+    items = []
+    for m in re.finditer(r'([0-9,.]+)\s*(?:pcs|nos|units)?\s*([A-Za-z][A-Za-z0-9 -]{2,40}?)\s*(?:@|at|rate|price)\s*([0-9,.]+)', text, re.I):
+        q = float(m.group(1).replace(',', ''))
+        nm = m.group(2).strip()
+        r = float(m.group(3).replace(',', ''))
+        items.append({"item_name": nm, "qty": q, "rate": r})
+    
+    missing = []
+    if not customer: missing.append('customer name')
+    if not items: missing.append('items with qty and rate (e.g., 2 pump springs @ 500)')
+    if missing:
+        return ("To create an invoice I need:\n" + "\n".join("- " + x for x in missing) +
+                "\n\nExample: 'Make invoice for ABC Traders, 2 pump springs @ 500, 10 bolts @ 50'")
+    
+    # Resolve item codes
+    final_items = []
+    for it in items:
+        found = mcp.call_tool("search_documents", {"query": it["item_name"], "doctype": "Item", "limit": 1})
+        res = found.get("results", [])
+        code = res[0]["name"] if res else it["item_name"]
+        final_items.append({"item_code": code, "qty": it["qty"], "rate": it["rate"]})
+    
+    data = {"customer": customer, "items": final_items, "update_stock": 1}
+    result = workflow_sales_invoice(_json.dumps(data))
+    if "error" in result:
+        return "Could not create invoice: " + result["error"]
+    return ("✅ Sales Invoice DRAFT created: %s\n%s\nPrint PDF: %s" % (
+        result.get("name"), result.get("next", ""), result.get("print_url", "")))
+
+
 def _handle_general_query(prompt, session, user, model, mcp):
     """Handle general queries with Ollama + MCP context."""
     apps = ", ".join(frappe.get_installed_apps())
@@ -824,7 +990,8 @@ def _handle_general_query(prompt, session, user, model, mcp):
     )
     hist_text = "\n".join(f"{m.role}: {m.content}" for m in reversed(history))[:3000]
     
-    # Build enhanced system prompt with MCP capabilities
+    # Build enhanced system prompt with MCP capabilities + full ERPNext knowledge
+    kb = get_knowledge_excerpt(12000)
     system = (
         f"You are the built-in AI assistant of SPI's ERPNext system, running on "
         f"Frappe Framework v15. Installed apps: {apps}. "
@@ -838,6 +1005,7 @@ def _handle_general_query(prompt, session, user, model, mcp):
         f"Adapt your answer to this user: give administrators technical detail; "
         f"give operators short, simple, step-by-step guidance. "
         f"Be brief, practical and accurate. Always provide real numbers and data."
+        f"\n\n=== ERPNext SYSTEM KNOWLEDGE (use to guide users accurately) ===\n{kb}"
     )
     
     full_prompt = f"{system}\n\nConversation so far:\n{hist_text}\n\nUser: {prompt}\nAssistant:"
@@ -921,3 +1089,168 @@ def ask_v2_with_voice(prompt, session=None, model=None, voice=True):
         "session": result.get("session"),
         "audio_url": audio_url
     }
+
+
+# ============ WORKFLOW HANDLERS ============
+
+@frappe.whitelist()
+def workflow_shipment_receipt(data=None):
+    """Record an incoming shipment into inventory.
+    data JSON: supplier, vehicle_no, items: [{item_code, qty, rate}], warehouse, remarks
+    Creates Supplier/PO if missing (as draft), then Purchase Receipt or Stock Entry.
+    """
+    import json as _json
+    data = _json.loads(data) if isinstance(data, str) else (data or {})
+    mcp = FrappeMCP()
+    steps = []
+
+    supplier = data.get("supplier")
+    if not supplier:
+        return {"error": "Supplier name required", "missing": ["supplier"]}
+
+    # Ensure supplier exists (create draft if not)
+    exists = mcp.call_tool("query_doctype", {"doctype": "Supplier", "filters": {"supplier_name": supplier}})
+    if exists.get("count", 0) == 0:
+        created = mcp.call_tool("create_document", {"doctype": "Supplier", "data": {
+            "doctype": "Supplier", "supplier_name": supplier, "supplier_type": "Company",
+            "supplier_group": "All Supplier Groups"}})
+        steps.append("Supplier created: %s" % created.get("name", supplier))
+
+    items = data.get("items") or []
+    if not items:
+        return {"error": "items required (item_code, qty, rate)", "missing": ["items"]}
+
+    warehouse = data.get("warehouse") or "Stores - SPI" if frappe.db.exists("Warehouse", "Stores - SPI") else (data.get("warehouse") or None)
+
+    # Validate items exist; create if missing
+    for it in items:
+        ic = it.get("item_code")
+        if not ic:
+            return {"error": "item_code required in every item", "missing": ["item_code"]}
+        found = mcp.call_tool("query_doctype", {"doctype": "Item", "filters": {"name": ic}})
+        if found.get("count", 0) == 0:
+            created = mcp.call_tool("create_document", {"doctype": "Item", "data": {
+                "doctype": "Item", "item_code": ic, "item_name": it.get("item_name", ic),
+                "item_group": it.get("item_group", "Raw Material"), "stock_uom": it.get("uom", "Nos"),
+                "is_stock_item": 1, "standard_rate": it.get("rate", 0)}})
+            steps.append("Item created: %s" % created.get("name", ic))
+
+    remarks = " | ".join(filter(None, ["Vehicle: %s" % data.get("vehicle_no") if data.get("vehicle_no") else None, data.get("remarks", "")]))
+
+    entry = None
+    # Prefer Purchase Receipt linked to nothing (direct) -> create as draft
+    pr_data = {
+        "doctype": "Purchase Receipt",
+        "supplier": supplier,
+        "company": frappe.defaults.get_global_default("company"),
+        "items": [{"item_code": it["item_code"], "qty": it.get("qty", 0),
+                   "rate": it.get("rate", 0), "t_warehouse": warehouse} for it in items],
+        "remarks": remarks,
+    }
+    pr = mcp.call_tool("create_document", {"doctype": "Purchase Receipt", "data": pr_data})
+    if "error" in pr:
+        # Fallback to Stock Entry Material Receipt
+        se_data = {
+            "doctype": "Stock Entry",
+            "stock_entry_type": "Material Receipt",
+            "purpose": "Material Receipt",
+            "company": frappe.defaults.get_global_default("company"),
+            "items": [{"item_code": it["item_code"], "qty": it.get("qty", 0),
+                       "t_warehouse": warehouse, "basic_rate": it.get("rate", 0)} for it in items],
+            "remarks": remarks,
+        }
+        se = mcp.call_tool("create_document", {"doctype": "Stock Entry", "data": se_data})
+        if "error" in se:
+            return {"error": se["error"], "steps": steps}
+        entry = {"doctype": "Stock Entry", "name": se.get("name"), "status": "Draft"}
+        steps.append("Stock Entry (Material Receipt) created: %s" % se.get("name"))
+    else:
+        entry = {"doctype": "Purchase Receipt", "name": pr.get("name"), "status": "Draft"}
+        steps.append("Purchase Receipt created: %s" % pr.get("name"))
+
+    steps.append("Next: submit the document to add stock, then Purchase Invoice for supplier bill, then Payment Entry to pay.")
+    return {"success": True, "entry": entry, "steps": steps}
+
+
+@frappe.whitelist()
+def workflow_stock_issue(data=None):
+    """Issue/transfer stock to a department or person.
+    data JSON: item_code, qty, from_warehouse, to_warehouse(optional), issue_type (Issue/Transfer), issued_to, department, remarks
+    """
+    import json as _json
+    data = _json.loads(data) if isinstance(data, str) else (data or {})
+    mcp = FrappeMCP()
+
+    item_code = data.get("item_code")
+    qty = data.get("qty")
+    from_wh = data.get("from_warehouse")
+    if not (item_code and qty and from_wh):
+        return {"error": "item_code, qty and from_warehouse required",
+                "missing": [k for k in ("item_code", "qty", "from_warehouse") if not data.get(k)]}
+
+    issue_type = data.get("issue_type", "Material Issue")
+    purpose = "Material Issue" if issue_type.lower().startswith("issue") else "Material Transfer"
+    to_wh = data.get("to_warehouse")
+    if purpose == "Material Transfer" and not to_wh:
+        return {"error": "to_warehouse required for Material Transfer", "missing": ["to_warehouse"]}
+
+    remarks_parts = []
+    if data.get("issued_to"):
+        remarks_parts.append("Issued to: %s" % data["issued_to"])
+    if data.get("department"):
+        remarks_parts.append("Department: %s" % data["department"])
+    if data.get("remarks"):
+        remarks_parts.append(str(data["remarks"]))
+
+    item_row = {"item_code": item_code, "qty": qty, "s_warehouse": from_wh}
+    if to_wh:
+        item_row["t_warehouse"] = to_wh
+
+    se_data = {"doctype": "Stock Entry", "stock_entry_type": purpose, "purpose": purpose,
+               "company": frappe.defaults.get_global_default("company"),
+               "items": [item_row], "remarks": " | ".join(remarks_parts)}
+    se = mcp.call_tool("create_document", {"doctype": "Stock Entry", "data": se_data})
+    if "error" in se:
+        return {"error": se["error"]}
+    return {"success": True, "doctype": "Stock Entry", "name": se.get("name"), "purpose": purpose,
+            "next": "Submit to move stock. Print: /api/method/frappe.utils.print_format.download_pdf?doctype=Stock%20Entry&name=%s" % se.get("name")}
+
+
+@frappe.whitelist()
+def workflow_sales_invoice(data=None):
+    """Create a Sales Invoice (draft) with items. data JSON: customer, items:[{item_code,qty,rate}], update_stock, taxes_template, remarks
+    """
+    import json as _json
+    data = _json.loads(data) if isinstance(data, str) else (data or {})
+    mcp = FrappeMCP()
+    customer = data.get("customer")
+    if not customer:
+        return {"error": "customer required", "missing": ["customer"]}
+
+    exists = mcp.call_tool("query_doctype", {"doctype": "Customer", "filters": {"name": customer}})
+    if exists.get("count", 0) == 0:
+        return {"error": "Customer '%s' not found. Create it first." % customer}
+
+    items = data.get("items") or []
+    if not items:
+        return {"error": "items required (item_code, qty, rate)", "missing": ["items"]}
+
+    si_data = {
+        "doctype": "Sales Invoice",
+        "customer": customer,
+        "company": frappe.defaults.get_global_default("company"),
+        "update_stock": 1 if data.get("update_stock") else 0,
+        "items": [{"item_code": it["item_code"], "qty": it.get("qty", 1), "rate": it.get("rate", 0)} for it in items],
+    }
+    if data.get("taxes_template"):
+        si_data["taxes_and_charges"] = data["taxes_template"]
+    if data.get("remarks"):
+        si_data["remarks"] = data["remarks"]
+
+    si = mcp.call_tool("create_document", {"doctype": "Sales Invoice", "data": si_data})
+    if "error" in si:
+        return {"error": si["error"]}
+    name = si.get("name")
+    return {"success": True, "doctype": "Sales Invoice", "name": name, "status": "Draft",
+            "next": "Submit to post to accounts, then Payment Entry to receive money.",
+            "print_url": "/api/method/frappe.utils.print_format.download_pdf?doctype=Sales%%20Invoice&name=%s&format=Standard" % name}
