@@ -271,6 +271,11 @@ function buildWorkspaceChat(w, mount) {
 			.catch(function (e) { typing.remove(); add('ai', 'Sorry, an error: ' + (e.message || 'try again')); });
 	}
 
+	function askDirect(q) {
+		input.value = q;
+		doSend();
+	}
+
 	sendBtn.onclick = doSend;
 	input.addEventListener('keydown', function (e) { if (e.key === 'Enter') doSend(); });
 
