@@ -41,9 +41,9 @@ inp.value = "";
 addMsg(container, q, "user");
 const typing = addTyping(container);
 const args = doctype && name ? { doctype: doctype, name: name, prompt: q, session: session } : { prompt: q, session: session };
-const method = doctype && name ? "erp_ai.api.ask_with_doc" : "erp_ai.api.ask_v2";
+const method = doctype && name ? "erp_ai.api.ask_with_doc" : "erp_ai.api.ask_v2_with_voice";
 frappe.call({ method: method, args: args })
-.then(function (r) { typing.remove(); addMsg(container, r.message.response, "ai"); })
+.then(function (r) { typing.remove(); addMsg(container, r.message.response, "ai"); if (r.message.audio_url) { var audio = new Audio(r.message.audio_url); audio.play().catch(function(e) {}); } })
 .catch(function (e) { typing.remove(); addMsg(container, "Sorry, an error: " + (e.message || "try again"), "ai"); });
 }
 
@@ -58,7 +58,7 @@ toggle.style.cssText = "position:fixed;right:24px;bottom:24px;width:56px;height:
 var panel = document.createElement("div");
 panel.id = "ai-chat-panel";
 panel.style.cssText = "position:fixed;right:24px;bottom:90px;width:380px;height:520px;background:var(--card-bg,#fff);border-radius:14px;box-shadow:0 8px 32px rgba(0,0,0,.32);display:none;flex-direction:column;z-index:9999;overflow:hidden;";
-panel.innerHTML = '<div style="background:#2490ef;color:#fff;padding:12px 16px;font-weight:600;display:flex;justify-content:space-between;align-items:center"><span>🤖 AI Assistant <small style="font-weight:400;opacity:.85">· private</small></span><button id="ai-clear" style="background:none;border:0;color:#fff;cursor:pointer;font-size:13px" title="Clear chat">🗑</button><button id="ai-chat-close" style="background:none;border:0;color:#fff;cursor:pointer;font-size:16px">✕</button></div><div id="ai-chat-msgs" style="flex:1;overflow-y:auto;padding:12px;background:var(--control-bg,#f6f8fa)"></div><div style="display:flex;border-top:1px solid var(--border-color,#e2e2e2);background:var(--card-bg,#fff)"><input id="ai-chat-input" style="flex:1;border:0;padding:12px;outline:none;background:transparent;color:inherit" placeholder="Ask anything… (Enter to send)"/><button id="ai-mic" style="border:0;background:transparent;color:#2490ef;padding:0 10px;cursor:pointer;font-size:18px" title="Speak (mic)">🎤</button><button id="ai-chat-send" style="border:0;background:#2490ef;color:#fff;padding:0 18px;cursor:pointer;font-weight:600">Send</button></div>';
+panel.innerHTML = '<div style="background:#2490ef;color:#fff;padding:12px 16px;font-weight:600;display:flex;justify-content:space-between;align-items:center"><span>🤖 AI Assistant <small style="font-weight:400;opacity:.85">· private</small></span><button id="ai-voice" style="background:none;border:0;color:#fff;cursor:pointer;font-size:16px" title="Toggle voice" data-voice="1">🔊</button><button id="ai-clear" style="background:none;border:0;color:#fff;cursor:pointer;font-size:13px" title="Clear chat">🗑</button><button id="ai-chat-close" style="background:none;border:0;color:#fff;cursor:pointer;font-size:16px">✕</button></div><div id="ai-chat-msgs" style="flex:1;overflow-y:auto;padding:12px;background:var(--control-bg,#f6f8fa)"></div><div style="display:flex;border-top:1px solid var(--border-color,#e2e2e2);background:var(--card-bg,#fff)"><input id="ai-chat-input" style="flex:1;border:0;padding:12px;outline:none;background:transparent;color:inherit" placeholder="Ask anything… (Enter to send)"/><button id="ai-mic" style="border:0;background:transparent;color:#2490ef;padding:0 10px;cursor:pointer;font-size:18px" title="Speak (mic)">🎤</button><button id="ai-chat-send" style="border:0;background:#2490ef;color:#fff;padding:0 18px;cursor:pointer;font-weight:600">Send</button></div>';
 
 document.body.appendChild(toggle);
 document.body.appendChild(panel);
@@ -73,6 +73,7 @@ panel.querySelector("#ai-chat-send").onclick = doSend;
 inp.addEventListener("keydown", function (e) { if (e.key === "Enter") doSend(); });
 panel.querySelector("#ai-chat-close").onclick = function () { panel.style.display = "none"; };
 panel.querySelector("#ai-clear").onclick = function () { container.innerHTML = ""; };
+	panel.querySelector("#ai-voice").onclick = function () { var btn = this; var enabled = btn.getAttribute("data-voice") === "1"; btn.setAttribute("data-voice", enabled ? "0" : "1"); btn.textContent = enabled ? "🔇" : "🔊"; };
 
 	var micBtn = panel.querySelector("#ai-mic");
 	function resetMic() {
@@ -264,9 +265,9 @@ function buildWorkspaceChat(w, mount) {
 		msgs.appendChild(typing);
 		msgs.scrollTop = msgs.scrollHeight;
 		var args = curDoc ? { doctype: curDoc.doctype, name: curDoc.name, prompt: q, session: session } : { prompt: q, session: session };
-		var method = curDoc ? 'erp_ai.api.ask_with_doc' : 'erp_ai.api.ask_v2';
+		var method = curDoc ? 'erp_ai.api.ask_with_doc' : 'erp_ai.api.ask_v2_with_voice';
 		frappe.call({ method: method, args: args })
-			.then(function (r) { typing.remove(); add('ai', r.message.response); })
+			.then(function (r) { typing.remove(); add("ai", r.message.response); if (r.message.audio_url) { var audio = new Audio(r.message.audio_url); audio.play().catch(function(e) {}); } })
 			.catch(function (e) { typing.remove(); add('ai', 'Sorry, an error: ' + (e.message || 'try again')); });
 	}
 

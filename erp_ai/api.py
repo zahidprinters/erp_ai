@@ -848,3 +848,76 @@ def _handle_general_query(prompt, session, user, model, mcp):
         return data["answer"]
     
     return _ollama(full_prompt, model)
+
+
+@frappe.whitelist()
+def text_to_speech(text, lang="en"):
+    """Convert text to speech and return audio URL."""
+    import subprocess
+    import tempfile
+    import os
+    from frappe.utils import get_site_path, get_url
+    
+    if not text:
+        return {"error": "No text provided"}
+    
+    # Select voice model based on language
+    if lang == "ur":
+        model = "/home/erpnext/ai/models/ur_PK-fasih-medium.onnx"
+    else:
+        model = "/home/erpnext/ai/models/en_US-lessac-medium.onnx"
+    
+    if not os.path.exists(model):
+        return {"error": f"Voice model not found: {model}"}
+    
+    # Generate unique filename
+    filename = f"tts_{frappe.generate_hash(length=8)}.wav"
+    output_path = os.path.join("/tmp", filename)
+    
+    try:
+        # Run Piper TTS
+        process = subprocess.run(
+            ["/home/erpnext/ai/piper/piper", "--model", model, "--output_file", output_path],
+            input=text.encode("utf-8"),
+            capture_output=True,
+            timeout=30
+        )
+        
+        if process.returncode != 0:
+            return {"error": f"TTS failed: {process.stderr.decode()}"}
+        
+        # Move to public folder for serving (shutil works across filesystems)
+        import shutil
+        public_path = get_site_path("public", "files", "tts", filename)
+        os.makedirs(os.path.dirname(public_path), exist_ok=True)
+        shutil.move(output_path, public_path)
+        
+        # Return URL
+        audio_url = f"/files/tts/{filename}"
+        return {"url": audio_url, "text": text[:100]}
+        
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@frappe.whitelist()
+def ask_v2_with_voice(prompt, session=None, model=None, voice=True):
+    """Enhanced AI assistant with optional voice output."""
+    if not prompt:
+        frappe.throw("prompt is required")
+    
+    # Get text response
+    result = ask_v2(prompt, session, model)
+    response_text = result.get("response", "")
+    
+    # Generate voice if requested
+    audio_url = None
+    if voice and response_text:
+        tts_result = text_to_speech(response_text)
+        audio_url = tts_result.get("url")
+    
+    return {
+        "response": response_text,
+        "session": result.get("session"),
+        "audio_url": audio_url
+    }
