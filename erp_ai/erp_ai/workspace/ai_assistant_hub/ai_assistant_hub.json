@@ -1,0 +1,33 @@
+{
+ "charts": [],
+ "content": "[{\"id\": \"ai_welcome\", \"type\": \"header\", \"data\": {\"text\": \"\\ud83e\\udd16 AI Assistant Hub\", \"col\": 12}}, {\"id\": \"ai_text\", \"type\": \"paragraph\", \"data\": {\"text\": \"Ask anything about ERPNext, Frappe framework, your custom apps or ERP data. Chat with your private AI assistant \\u2014 ask about counts, customers, or how-to steps. Voice input supported (\\ud83c\\udfa4 button in chat).\", \"col\": 12}}, {\"id\": \"ai_placeholder\", \"type\": \"paragraph\", \"data\": {\"text\": \"\\ud83d\\udcac Live AI chat is loading below...\", \"col\": 12}}]",
+ "creation": "2026-09-07 13:18:44.728275",
+ "custom_blocks": [],
+ "docstatus": 0,
+ "doctype": "Workspace",
+ "hide_custom": 0,
+ "idx": 0,
+ "indicator_color": "green",
+ "is_hidden": 0,
+ "label": "AI Assistant Hub",
+ "links": [],
+ "modified": "2026-09-08 09:13:59.475301",
+ "modified_by": "Administrator",
+ "module": "ERP AI",
+ "name": "AI Assistant Hub",
+ "number_cards": [],
+ "owner": "Administrator",
+ "public": 1,
+ "quick_lists": [],
+ "roles": [],
+ "sequence_id": 1.0,
+ "shortcuts": [
+  {
+   "doc_view": "",
+   "label": "Open AI Chat",
+   "link_to": "ai-assistant",
+   "type": "Page"
+  }
+ ],
+ "title": "AI Assistant Hub"
+}

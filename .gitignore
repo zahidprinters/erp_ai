@@ -1,7 +1,26 @@
-.DS_Store
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Frappe
 *.pyc
-*.egg-info
+.swp
 *.swp
-tags
-node_modules
-__pycache__
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Local settings
+site_config.json

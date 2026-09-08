@@ -1,0 +1,1 @@
+# AI Chat Message doctype

@@ -1,0 +1,16 @@
+{
+ "content": null,
+ "creation": "2026-09-07 12:00:00.000000",
+ "doctype": "Page",
+ "idx": 0,
+ "modified": "2026-09-07 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "ERP AI",
+ "name": "ai-assistant",
+ "owner": "Administrator",
+ "page_name": "ai-assistant",
+ "roles": [],
+ "standard": "Yes",
+ "system_page": 0,
+ "title": "AI Assistant"
+}
