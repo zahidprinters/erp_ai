@@ -247,4 +247,4 @@ app_license = "mit"
 # List of apps whose translatable strings should be excluded from this app's translations.
 # ignore_translatable_strings_from = []
 
-app_include_js = "/assets/erp_ai/js/ai_widget.js?v=2"
+app_include_js = "/assets/erp_ai/js/ai_widget.js?v=3"
