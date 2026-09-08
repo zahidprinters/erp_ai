@@ -625,93 +625,157 @@ def ask_v2(prompt, session=None, model=None):
 
 
 def _process_with_mcp(prompt, session, user, model):
-    """Process prompt using MCP tools."""
-    prompt_lower = prompt.lower().strip()
-    
-    # Intent detection and tool calling
+    """Process prompt using MCP tools - intent detection + real DB actions."""
+    pl = prompt.lower().strip()
+    import re as _re
     mcp = FrappeMCP()
-    
-    # Create item
-    if any(kw in prompt_lower for kw in ["create item", "add item", "new item", "item banaiye", "item create"]):
+
+    # ---------- CREATE INTENTS ----------
+    if any(kw in pl for kw in ["create item", "add item", "add a item", "add a new item", "new item",
+                                "item banaiye", "item create", "item add", "item banao",
+                                "nyaa item", "item shuru"]) or _re.search(r'\b(add|create|nyaa banao)\b.*\b(item|product)\b', pl):
         return _handle_create_item(prompt, mcp)
-    
-    # Create invoice
-    if any(kw in prompt_lower for kw in ["create invoice", "add invoice", "new invoice", "invoice banaiye", "bill banaiye"]):
-        return _handle_create_invoice(prompt, mcp)
-    
-    # Create customer
-    if any(kw in prompt_lower for kw in ["create customer", "add customer", "new customer", "customer banaiye", "client banaiye"]):
-        return _handle_create_customer(prompt, mcp)
-    
-    # Create supplier
-    if any(kw in prompt_lower for kw in ["create supplier", "add supplier", "new supplier", "supplier banaiye", "vendor banaiye"]):
-        return _handle_create_supplier(prompt, mcp)
-    
-    # Print document
-    if any(kw in prompt_lower for kw in ["print", "pdf", "receipt", "challan"]):
-        return _handle_print(prompt, mcp)
-    
-    # WORKFLOW: shipment/goods arrival
-    if any(kw in prompt_lower for kw in ["shipment", "shipment arrived", "goods received", "goods arrived",
-                                          "consignment", "material received", "samad ki", "aagai",
-                                          "pump spring shipment", "grn"]):
-        return _handle_shipment_nl(prompt, mcp)
 
-    # WORKFLOW: stock issue to department/person
-    if any(kw in prompt_lower for kw in ["issue stock", "issue material", "material issue",
-                                          "issue to", "transfer stock", "jari karein",
-                                          "department ko dein", "consume"]):
-        return _handle_issue_nl(prompt, mcp)
-
-    # WORKFLOW: sales invoice creation via natural language
-    if any(kw in prompt_lower for kw in ["make invoice", "banaiye invoice", "generate invoice",
-                                          "invoice bana", "bill customer"]):
+    if any(kw in pl for kw in ["create invoice", "add invoice", "add a invoice", "new invoice",
+                                "invoice banaiye", "bill banaiye", "invoice banao", "invoice create"]):
         return _handle_invoice_nl(prompt, mcp)
 
-    # Count queries
-    if any(kw in prompt_lower for kw in ["how many", "count of", "number of", "kitne", "total"]):
+    if any(kw in pl for kw in ["create customer", "add customer", "new customer", "customer banaiye",
+                                "client banaiye", "customer banao", "customer add"]):
+        return _handle_create_customer(prompt, mcp)
+
+    if any(kw in pl for kw in ["create supplier", "add supplier", "new supplier", "supplier banaiye",
+                                "vendor banaiye", "supplier banao", "supplier add"]):
+        return _handle_create_supplier(prompt, mcp)
+
+    # ---------- PRINT ----------
+    if _re.search(r'\b(print|pdf|receipt|challan|print kar)[a-z ]*(invoice|bill|delivery|receipt|order|note|voucher)', pl) or \
+       (any(kw in pl for kw in ["print", "pdf"]) and any(kw in pl for kw in ["invoice", "bill", "order", "receipt", "delivery note"])):
+        return _handle_print(prompt, mcp)
+
+    # ---------- WORKFLOWS ----------
+    if any(kw in pl for kw in ["shipment", "goods received", "goods arrived", "consignment",
+                                "material received", "samad kii", "aagai", "aagya", "grn",
+                                "mal aa gaya", "stock add kar"]):
+        return _handle_shipment_nl(prompt, mcp)
+
+    if any(kw in pl for kw in ["issue stock", "issue material", "material issue", "issue to",
+                                "transfer stock", "jari karein", "department ko dein", "consume",
+                                "issue kar", "nikal kar dein", "stock transfer"]):
+        return _handle_issue_nl(prompt, mcp)
+
+    if any(kw in pl for kw in ["make invoice", "banaiye invoice", "generate invoice", "invoice bana",
+                                "bill customer", "customer ko bill kar", "bill banao"]):
+        return _handle_invoice_nl(prompt, mcp)
+
+    # ---------- COUNT QUERIES ----------
+    if any(kw in pl for kw in ["how many", "count of", "number of", "kitne", "kitna", "how much", "total"]):
         return _handle_count_query(prompt, mcp)
-    
-    # List queries
-    if any(kw in prompt_lower for kw in ["list", "show me", "dikhaiye", "all", "sab"]):
+
+    # ---------- CATALOG / LIST QUERIES (BROAD) ----------
+    if any(kw in pl for kw in ["what items", "which items", "items we have", "items list",
+                                "list items", "list all items", "show items", "show me items",
+                                "kya items", "kaun se items", "all items", "item list",
+                                "what products", "show all", "list all", "show me all",
+                                "what do we have", "what stock", "stock we have",
+                                "what customers", "which customers", "what suppliers",
+                                "list customers", "list suppliers", "list invoices",
+                                "show customers", "show suppliers", "show invoices"]):
         return _handle_list_query(prompt, mcp)
-    
-    # Search queries
-    if any(kw in prompt_lower for kw in ["search", "find", "dhundho", "lookup"]):
+
+    # ---------- SEARCH ----------
+    if any(kw in pl for kw in ["search", "find", "dhundho", "lookup", "dhundo", "search kar"]):
         return _handle_search_query(prompt, mcp)
-    
-    # Default: try data router first, then Ollama with MCP context
+
+    # ---------- DATA-y FALLBACK ----------
+    # If user asks about specific entities with a question, try data router first
     return _handle_general_query(prompt, session, user, model, mcp)
 
 
 def _handle_create_item(prompt, mcp):
-    """Extract item details from prompt and create."""
-    import re
-    # Try to extract item name, code, group, price
-    name_match = re.search(r'(?:named|name|called|ka naam)\s+["\']?([^"\',.]+)', prompt, re.I)
-    group_match = re.search(r'(?:group|category|category)\s+["\']?([^"\',.]+)', prompt, re.I)
-    price_match = re.search(r'(?:price|rate|cost|keemat)\s+(\d+)', prompt, re.I)
-    
-    item_name = name_match.group(1).strip() if name_match else None
-    item_group = group_match.group(1).strip() if group_match else "Products"
-    standard_rate = float(price_match.group(1)) if price_match else 0
-    
+    """Extract item details from prompt (EN/UR) and create the item."""
+    import re as _re
+    p = prompt
+    pl = p.lower()
+
+    def grab(patterns, stop='[,.;]|(?:price|rate|group|category|stock|qty|for|in|with|and)'):
+        for pat in patterns:
+            m = _re.search(pat, p, _re.I)
+            if m and m.group(1).strip():
+                return m.group(1).strip().rstrip(',').strip()
+        return None
+
+    item_name = grab([
+        r'(?:named|name|called|ka naam|naam)[:]?\s*([^,;.]+?)(?:\s+(?:group|category|price|rate|cost|keemat|py|stock|qty|quantity|opening|for|with|in)\b|,|;|$)',
+        r'(?:add|create|banao|banaiye)\s*(?:a\s+|new\s+)?(?:item|product)[:\-]?\s*([A-Za-z][A-Za-z0-9 .&\-]{2,40}?)(?=\s+(?:group|category|price|rate|cost|keemat|py|stock|qty|quantity|opening|for|with|in)\b|,|;|$)',
+        r'(?:item|product)[:]?\s*([A-Za-z][A-Za-z0-9 .&\-]{2,40}?)(?=\s+(?:group|category|price|rate|cost|keemat|py|stock|qty|quantity|opening|for|with|in)\b|,|;|$)',
+        r'\b([A-Za-z][A-Za-z0-9 .&\-]{2,40}(?:springs?|bolts?|nuts?|bearings?|gaskets?|seals?|valves?|pumps?|rods?|wires?))\b',
+    ])
+
+    item_group = grab([
+        r'(?:group|category)[:]?\s*([^,;.]+?)(?:\s*(?:price|rate|cost|keemat|py|stock|qty|quantity|opening)\b|$)',
+        r'grp[:]?\s*([^,\.]+)',
+        r'\b(raw[ -]?material[s]?|finished goods|spare part[s]?|services|products?)\b'
+    ]) or "Products"
+
+    price = None
+    m = _re.search(r'(?:price|rate|cost|keemat|py)[:=]?\s*([0-9][0-9,.]*)', p, _re.I) or \
+            _re.search(r'(?:price|rate|cost|keemat|py)\s+([0-9][0-9, ]*)', p, _re.I)
+    if m:
+        try:
+            price = float(m.group(1).replace(',', '').strip())
+        except Exception:
+            price = None
+
+    qty = None
+    m = _re.search(r'(?:qty|quantity|opening|stock)[:]?\s*([0-9][0-9,.]*)', p, _re.I)
+    if m:
+        try:
+            qty = float(m.group(1).replace(',', ''))
+        except Exception:
+            qty = None
+
+    uom = grab([r'(?:uom|unit)[:]?\s*([A-Za-z]{1,4})']) or "Nos"
+
     if not item_name:
-        return "To create an item, please provide: item name, group (optional), price (optional). Example: 'Create item named Steel Rod in group Raw Materials price 100'"
-    
-    data = {
-        "doctype": "Item",
-        "item_name": item_name,
-        "item_code": item_name.replace(" ", "-").upper(),
-        "item_group": item_group,
-        "stock_uom": "Nos",
-        "standard_rate": standard_rate,
-        "is_stock_item": 1
-    }
+        return ("To create an item I need at least a name. Please reply with the details,"
+                " e.g.: 'Add item Pump Spring, group Raw Material, price 500, opening stock 100 in Stores'.\n"
+                "Or: 'Create item named Steel Rod in group Raw Materials price 100'")
+
+    code = item_name.replace(" ", "-").upper()
+    # Auto-create item group if it doesn't exist
+    if not frappe.db.exists("Item Group", item_group) or frappe.db.get_value("Item Group", item_group) is None:
+        try:
+            frappe.get_doc({"doctype": "Item Group", "item_group_name": item_group}).insert(ignore_permissions=True)
+            frappe.db.commit()
+        except Exception:
+            pass
+    data = {"doctype": "Item", "item_code": code, "item_name": item_name,
+            "item_group": item_group, "stock_uom": uom, "is_stock_item": 1,
+            "standard_rate": price or 0}
     result = mcp.call_tool("create_document", {"doctype": "Item", "data": data})
     if "error" in result:
-        return f"Error: {result['error']}"
-    return result.get("message", "Item created")
+        # try again with a code based on time to avoid duplicate
+        code = code + "-" + frappe.generate_hash(length=4).upper()
+        data["item_code"] = code
+        result = mcp.call_tool("create_document", {"doctype": "Item", "data": data})
+        if "error" in result:
+            return "Could not create item: " + result["error"]
+
+    extra = []
+    if qty:
+        # record opening stock via Stock Reconciliation or Stock Entry Material Receipt
+        se = mcp.call_tool("create_document", {"doctype": "Stock Entry", "data": {
+            "doctype": "Stock Entry", "stock_entry_type": "Material Receipt", "purpose": "Material Receipt",
+            "company": frappe.defaults.get_global_default("company"),
+            "items": [{"item_code": code, "qty": qty, "t_warehouse": "Stores - SPI" if frappe.db.exists("Warehouse", "Stores - SPI") else "Stores", "basic_rate": price or 0}]}})
+        if "error" not in se:
+            extra.append(f"Opening stock {qty:g} added (Stock Entry {se.get('name')} - DRAFT, submit to confirm)")
+
+    return (f"✅ Item created: {item_name} ({code})\n"
+            f"  Group: {item_group} | UOM: {uom} | Price: {price or 0:,.0f}\n"
+            + ("\n".join("- " + x for x in extra) + "\n" if extra else "")
+            + "Say 'save' or 'submit' to finalize.")
 
 
 def _handle_create_invoice(prompt, mcp):
@@ -835,26 +899,56 @@ def _handle_count_query(prompt, mcp):
 
 
 def _handle_list_query(prompt, mcp):
-    """Handle list/show me queries."""
-    prompt_lower = prompt.lower()
-    
-    if "item" in prompt_lower or "product" in prompt_lower:
-        result = mcp.call_tool("query_doctype", {"doctype": "Item", "filters": {"disabled": 0}, "fields": ["name", "item_name", "standard_rate"], "limit": 10})
+    """Handle list/show/what-items queries with REAL data + stock quantities."""
+    pl = prompt.lower()
+
+    if "item" in pl or "product" in pl or "stock" in pl or "inventory" in pl:
+        result = mcp.call_tool("query_doctype", {"doctype": "Item", "filters": {"disabled": 0},
+                                                 "fields": ["name", "item_name", "item_group", "standard_rate"], "limit": 50})
         items = result.get("records", [])
         if not items:
-            return "No items found."
-        lines = [f"- {i.get('item_name', i['name'])} (Rate: {i.get('standard_rate', 0)})" for i in items[:5]]
-        return f"Here are some items (showing 5 of {result['count']}):\n" + "\n".join(lines)
-    
-    if "customer" in prompt_lower:
-        result = mcp.call_tool("query_doctype", {"doctype": "Customer", "fields": ["name", "customer_name"], "limit": 10})
+            return "No items found in the system."
+        # enrich with actual stock from Bin/Stock Ledger
+        lines = []
+        for i in items[:12]:
+            bin_recs = mcp.call_tool("query_doctype", {"doctype": "Bin", "filters": {"item_code": i["name"]},
+                                                       "fields": ["actual_qty", "warehouse"], "limit": 20})
+            bins = bin_recs.get("records", [])
+            if bins:
+                qty = sum(b.get("actual_qty", 0) or 0 for b in bins)
+                whs = ", ".join(b.get("warehouse", "") for b in bins[:3])
+                lines.append(f"- {i.get('item_name', i['name'])} ({i.get('item_group', '')}) | Stock: {qty:,.0f} | Rate: {i.get('standard_rate', 0):,.0f} | {whs}")
+            else:
+                lines.append(f"- {i.get('item_name', i['name'])} ({i.get('item_group', '')}) | Rate: {i.get('standard_rate', 0):,.0f}")
+        total = len(items)
+        shown = len(lines)
+        return f"We have {total} items. (showing {shown}):\n" + "\n".join(lines)
+
+    if "customer" in pl or "client" in pl:
+        result = mcp.call_tool("query_doctype", {"doctype": "Customer", "fields": ["name", "customer_name"], "limit": 50})
         records = result.get("records", [])
         if not records:
             return "No customers found."
-        lines = [f"- {r.get('customer_name', r['name'])}" for r in records[:5]]
-        return f"Here are some customers (showing 5 of {result['count']}):\n" + "\n".join(lines)
-    
-    return "I can list: items, customers, suppliers, invoices. Please specify what you want to see."
+        lines = [f"- {r.get('customer_name', r['name'])}" for r in records[:10]]
+        return f"We have {result.get('count', 0)} customers (showing {len(lines)}):\n" + "\n".join(lines)
+
+    if "supplier" in pl or "vendor" in pl:
+        result = mcp.call_tool("query_doctype", {"doctype": "Supplier", "fields": ["name", "supplier_name"], "limit": 50})
+        records = result.get("records", [])
+        if not records:
+            return "No suppliers found."
+        lines = [f"- {r.get('supplier_name', r['name'])}" for r in records[:10]]
+        return f"We have {result.get('count', 0)} suppliers (showing {len(lines)}):\n" + "\n".join(lines)
+
+    if "invoice" in pl or "bill" in pl:
+        result = mcp.call_tool("query_doctype", {"doctype": "Sales Invoice", "fields": ["name", "customer", "grand_total", "status"], "limit": 20})
+        records = result.get("records", [])
+        if not records:
+            return "No sales invoices found."
+        lines = [f"- {r['name']} | {r.get('customer', '')} | {r.get('grand_total', 0):,.0f} | {r.get('status', '')}" for r in records[:10]]
+        return f"We have {result.get('count', 0)} sales invoices (showing {len(lines)}):\n" + "\n".join(lines)
+
+    return "I can show: items (with stock), customers, suppliers, invoices. Try: 'what items we have' or 'list customers'."
 
 
 def _handle_search_query(prompt, mcp):
