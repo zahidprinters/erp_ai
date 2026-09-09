@@ -198,53 +198,44 @@ def save_draft(session, doctype, data):
     return True
 
 
-def get_draft(session):
-    """Get the latest draft. Returns (doctype, data) or (None, None)."""
-    if not session:
-        return None, None
-    key = _draft_key(session)
-    # Get last 5 user messages to check for draft or clear marker
-    msgs = frappe.db.get_all(
-        "AI Chat Message",
-        filters={
-            "session_id": session,
-            "role": "user",
-            "user": frappe.session.user,
-        },
-        fields=["content"],
-        order_by="creation desc",
-        limit=5,
-    )
+def get_draft(session, user=None):
+    """Get pending action from AI Assistant Action DocType.
 
-    # Phase 2: reject any draft that was confirmed or cancelled.
-    # [DRAFT_CLEARED] and [DOC_CREATED] markers are written during the
-    # confirmation flow. If they exist in the most recent messages, the
-    # previous session's draft is considered consumed and must not be
-    # replayed (prevents double-confirmation of the same draft).
-    for msg in msgs:
-        c = (msg.get("content") or "").strip()
-        if c.startswith("[DRAFT_CLEARED]") or c.startswith("[DOC_CREATED]") or c.startswith("[DRAFT_CANCELLED]"):
-            return None, None
-    # Find the most recent draft (skip if cleared)
-    for msg in msgs:
-        content = msg.content or ""
-        if content.startswith(key):
-            rest = content[len(key):]
-            pipe_idx = rest.index("|")
-            doctype = rest[:pipe_idx]
-            data = json.loads(rest[pipe_idx + 1:])
-            return doctype, data
-        elif content == "[DRAFT_CLEARED]":
-            return None, None
-    return None, None
+    Returns a dict for the caller to display a preview / prompt confirmation,
+    or None if no pending action exists for the session.
 
-    msg = frappe.db.get_all(
-        "AI Chat Message",
-        filters={"session_id": session, "role": "user", "content": ["like", f"{key}%"]},
-        fields=["content"],
-        order_by="creation desc",
-        limit=1,
-    )
+    Parameters
+    ----------
+    session : str
+        Browser session identifier (kept for UI correlation only; auth is the
+        user).
+    user : str, optional
+        Authenticated user (defaults to frappe.session.user).
+
+    Returns
+    -------
+    dict or None
+        Action dict with keys: name, user, session_id, action, target_doctype,
+        status, draft_data, nonce, expires_on, document_version
+        or None if no pending action found.
+    """
+    user = user or frappe.session.user
+    action_name = _get_action(session=session, user=user, status="pending")
+    if not action_name:
+        return None
+    action = frappe.get_doc("AI Assistant Action", action_name)
+    return {
+        "name": action.name,
+        "user": action.user,
+        "session_id": action.session_id,
+        "action": action.action,
+        "target_doctype": action.target_doctype,
+        "status": action.status,
+        "draft_data": json.loads(action.draft_data) if action.draft_data else {},
+        "nonce": action.nonce,
+        "expires_on": action.expires_on,
+        "document_version": action.document_version,
+    }
     if not msg:
         return None, None
     content = msg[0].content
