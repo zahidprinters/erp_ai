@@ -270,12 +270,16 @@ def make_token(user="Administrator"):
     """CLI-only dev helper: (re)generate an API token pair and print it.
 
     bench --site spi.local execute erp_ai.api.make_token --args "['Administrator']"
+
+    NOT @frappe.whitelist — only runnable via `bench execute` (never over HTTP).
+    Restricted to Administrator.
     """
+    frappe.only_for("Administrator")
     u = frappe.get_doc("User", user)
     u.api_key = frappe.generate_hash(length=15)
     secret = frappe.generate_hash(length=15)
     u.api_secret = secret
-    u.save(ignore_permissions=True)
+    u.save()
     frappe.db.commit()
     print(f"{u.api_key}:{secret}")
 
@@ -645,7 +649,7 @@ def _process_with_mcp(prompt, session, user, model):
     if pl in ['submit', 'finalize', 'jama kar', 'jama', 'submit kar', 'final']:
         # ===== SUBMIT a previously created document =====
         _doc_msg = frappe.db.get_all("AI Chat Message",
-            filters={"session_id": session or "", "role": "assistant", "content": ["like", "[DOC_CREATED]%"]},
+            filters={"session_id": session or "", "role": "assistant", "content": ["like", "[DOC_CREATED]%"], "user": user},
             fields=["content"], order_by="creation desc", limit=1)
         if _doc_msg:
             _parts = _doc_msg[0].content.replace("[DOC_CREATED]|", "").split("|")
@@ -676,7 +680,18 @@ def _process_with_mcp(prompt, session, user, model):
         # ===== DRAFT WORKFLOW: Confirm & create document =====
         _doctype, _draft_data = get_draft(session)
         if _doctype:
-            _result = create_document_from_draft(_doctype, _draft_data, mcp)
+            # Phase 2: try the dedicated AI Assistant Action store first.
+            from .draft_workflow import confirm_draft
+            _action_result = confirm_draft(session=session, user=user)
+            if isinstance(_action_result, dict) and "error" in _action_result:
+                # Not in the new store — fall back to legacy [DRAFT] marker path.
+                _doctype, _draft_data = get_draft(session)
+                if _doctype:
+                    _result = create_document_from_draft(_doctype, _draft_data, mcp)
+                else:
+                    _result = _action_result
+            else:
+                _result = _action_result
             if "error" in _result:
                 if _result.get("duplicate"):
                     return f"⚠️ {_result['error']}. Use a different name."
@@ -699,7 +714,7 @@ def _process_with_mcp(prompt, session, user, model):
                     f"   Say '**submit**' to finalize, or tell me what to change.{_print_hint}")
         # ===== LEGACY: Pending item update (price/stock) =====
         _pending = frappe.db.get_all("AI Chat Message",
-            filters={"session_id": session or "", "role": "user", "content": ["like", "[PENDING]%"]},
+            filters={"session_id": session or "", "role": "user", "content": ["like", "[PENDING]%"], "user": user},
             fields=["content"], order_by="creation desc", limit=1)
         if _pending:
             _parts = _pending[0].content.replace("[PENDING]|", "").split("|")
@@ -1060,6 +1075,7 @@ def _handle_create_item(prompt, mcp, session=None):
         result = mcp.call_tool("create_document", {"doctype": "Item", "data": data})
         if "error" in result:
             return "Could not create item: " + result["error"]
+    frappe.db.commit()
 
     extra = []
     if qty:
@@ -1069,6 +1085,7 @@ def _handle_create_item(prompt, mcp, session=None):
             "company": frappe.defaults.get_global_default("company"),
             "items": [{"item_code": code, "qty": qty, "t_warehouse": "Stores - SPI" if frappe.db.exists("Warehouse", "Stores - SPI") else "Stores", "basic_rate": price or 0}]}})
         if "error" not in se:
+            frappe.db.commit()
             extra.append(f"Opening stock {qty:g} added (Stock Entry {se.get('name')} - DRAFT, submit to confirm)")
 
     return (f"✅ Item created: {item_name} ({code})\n"
@@ -1100,6 +1117,7 @@ def _handle_create_invoice(prompt, mcp):
     result = mcp.call_tool("create_document", {"doctype": "Sales Invoice", "data": data})
     if "error" in result:
         return f"Error: {result['error']}"
+    frappe.db.commit()
     return result.get("message", "Invoice created")
 
 
@@ -1122,6 +1140,7 @@ def _handle_create_customer(prompt, mcp):
     result = mcp.call_tool("create_document", {"doctype": "Customer", "data": data})
     if "error" in result:
         return f"Error: {result['error']}"
+    frappe.db.commit()
     return result.get("message", "Customer created")
 
 
@@ -1143,6 +1162,7 @@ def _handle_create_supplier(prompt, mcp):
     result = mcp.call_tool("create_document", {"doctype": "Supplier", "data": data})
     if "error" in result:
         return f"Error: {result['error']}"
+    frappe.db.commit()
     return result.get("message", "Supplier created")
 
 
@@ -1628,6 +1648,7 @@ def workflow_shipment_receipt(data=None):
         se = mcp.call_tool("create_document", {"doctype": "Stock Entry", "data": se_data})
         if "error" in se:
             return {"error": se["error"], "steps": steps}
+        frappe.db.commit()
         entry = {"doctype": "Stock Entry", "name": se.get("name"), "status": "Draft"}
         steps.append("Stock Entry (Material Receipt) created: %s" % se.get("name"))
     else:
@@ -1678,6 +1699,7 @@ def workflow_stock_issue(data=None):
     se = mcp.call_tool("create_document", {"doctype": "Stock Entry", "data": se_data})
     if "error" in se:
         return {"error": se["error"]}
+    frappe.db.commit()
     return {"success": True, "doctype": "Stock Entry", "name": se.get("name"), "purpose": purpose,
             "next": "Submit to move stock. Print: /api/method/frappe.utils.print_format.download_pdf?doctype=Stock%20Entry&name=%s" % se.get("name")}
 

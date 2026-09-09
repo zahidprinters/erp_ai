@@ -15,6 +15,7 @@ Flow:
 import json
 import re
 import frappe
+from erp_ai.mcp.server import FrappeMCP
 
 # =============================================================================
 # DOCTYPE SCHEMAS — define required & optional fields for each operation
@@ -205,11 +206,25 @@ def get_draft(session):
     # Get last 5 user messages to check for draft or clear marker
     msgs = frappe.db.get_all(
         "AI Chat Message",
-        filters={"session_id": session, "role": "user"},
+        filters={
+            "session_id": session,
+            "role": "user",
+            "user": frappe.session.user,
+        },
         fields=["content"],
         order_by="creation desc",
         limit=5,
     )
+
+    # Phase 2: reject any draft that was confirmed or cancelled.
+    # [DRAFT_CLEARED] and [DOC_CREATED] markers are written during the
+    # confirmation flow. If they exist in the most recent messages, the
+    # previous session's draft is considered consumed and must not be
+    # replayed (prevents double-confirmation of the same draft).
+    for msg in msgs:
+        c = (msg.get("content") or "").strip()
+        if c.startswith("[DRAFT_CLEARED]") or c.startswith("[DOC_CREATED]") or c.startswith("[DRAFT_CANCELLED]"):
+            return None, None
     # Find the most recent draft (skip if cleared)
     for msg in msgs:
         content = msg.content or ""
@@ -241,8 +256,167 @@ def get_draft(session):
 
 
 def clear_draft(session):
-    """Mark draft as consumed."""
-    pass
+    """Mark draft as consumed (writes a [DRAFT_CLEARED] marker; get_draft honours it)."""
+    if not session:
+        return False
+    frappe.get_doc({
+        "doctype": "AI Chat Message",
+        "user": frappe.session.user,
+        "session_id": session,
+        "role": "user",
+        "content": "[DRAFT_CLEARED]",
+    }).insert(ignore_permissions=True)
+    frappe.db.commit()
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — dedicated, user-bound draft persistence (AI Assistant Action).
+# Replaces chat-marker drafts as the primary store of pending operations.
+# ---------------------------------------------------------------------------
+
+ACTION_EXPIRY_MINUTES = 60
+
+
+def _get_action(action_id=None, session=None, user=None, status="pending"):
+    """Return an AI Assistant Action Doc, or None.
+
+    Exactly one of `action_id` or (`session`+`user`) may be provided.
+    """
+    user = user or frappe.session.user
+    if action_id:
+        return frappe.get_doc("AI Assistant Action", action_id) if frappe.db.exists("AI Assistant Action", action_id) else None
+    if session:
+        return frappe.db.get_value(
+            "AI Assistant Action",
+            {"user": user, "session_id": session, "status": status},
+            "name",
+        )
+    return None
+
+
+def create_draft(session, action, target_doctype, draft_data, user=None):
+    """Persist a pending operation to the AI Assistant Action DocType.
+
+    Parameters
+    ----------
+    session : str
+        Browser session identifier (kept for UI correlation only; auth is the user).
+    action : str
+        One of 'create', 'submit', 'update'.
+    target_doctype : str
+        ERPNext DocType the pending operation targets (e.g. 'Sales Invoice').
+    draft_data : dict
+        Collected document fields to be used at confirmation time.
+    user : str, optional
+        Authenticated user (defaults to frappe.session.user).
+
+    Returns
+    -------
+    dict
+        {'name': action_name, 'nonce': nonce, 'expires_on': ...} on success,
+        or {'error': ...} on failure.
+    """
+    user = user or frappe.session.user
+    now = frappe.utils.now_datetime()
+    expiry = frappe.utils.add_to_date(now, minutes=ACTION_EXPIRY_MINUTES)
+
+    # Clean up any stale pending action for this session/user first.
+    _existing = _get_action(session=session, user=user, status="pending")
+    if _existing:
+        try:
+            _existing.cancel()
+        except Exception:
+            pass
+        try:
+            _existing.delete()
+        except Exception:
+            pass
+
+    import secrets
+    nonce = secrets.token_hex(16)
+
+    doc = frappe.get_doc({
+        "doctype": "AI Assistant Action",
+        "user": user,
+        "session_id": str(session),
+        "action": action,
+        "target_doctype": target_doctype,
+        "status": "pending",
+        "draft_data": json.dumps(draft_data, default=str),
+        "nonce": nonce,
+        "expires_on": expiry.isoformat(),
+        "document_version": 1,
+    })
+    doc.insert()
+    frappe.db.commit()
+    return {"name": doc.name, "nonce": nonce, "expires_on": expiry.isoformat()}
+
+
+def confirm_draft(session, user=None, expected_nonce=None, action_id=None):
+    """Confirm (create) a pending operation using the AI Assistant Action store.
+
+    Reads inputs from the AI Assistant Action DocType, creates the document via
+    create_document_from_draft(), then marks the action as 'completed' and writes
+    a [DOC_CREATED] marker for backward compat with the submit path.
+    """
+    user = user or frappe.session.user
+    action = _get_action(session=session, user=user, status="pending")
+    if not action:
+        return {"error": "No pending draft found for this session"}
+
+    action = frappe.get_doc("AI Assistant Action", action)
+    if not action or action.status != "pending":
+        return {"error": "The pending action is no longer available"}
+
+    # Expiry check
+    expires_on = action.expires_on
+    if isinstance(expires_on, str):
+        expires_on = frappe.parse_datetime(expires_on)
+    if expires_on and expires_on < frappe.utils.now_datetime():
+        return {"error": "This draft has expired. Please start over."}
+
+    # Nonce check: prevents reusing an old confirmation link / guessed id.
+    if expected_nonce and action.nonce != expected_nonce:
+        return {"error": "Confirmation token mismatch. Please use the latest confirmation link."}
+
+    try:
+        draft_data = json.loads(action.draft_data) if action.draft_data else {}
+    except (ValueError, TypeError):
+        return {"error": "Draft data is corrupted"}
+
+    target_doctype = action.target_doctype
+    if not target_doctype:
+        return {"error": "Draft does not specify a target DocType"}
+
+    # Create the document via the existing creator.
+    mcp = FrappeMCP()
+    result = create_document_from_draft(target_doctype, draft_data, mcp)
+
+    # Mark action as completed regardless of outcome, so it isn't reused.
+    try:
+        action.status = "completed"
+        action.confirmed_at = frappe.utils.now()
+        action.target_docname = result.get("name") if isinstance(result, dict) and result.get("name") else None
+        action.save()
+    except Exception:
+        pass
+    frappe.db.commit()
+
+    # Write backward-compat marker so the existing submit path can still find it.
+    try:
+        frappe.get_doc({
+            "doctype": "AI Chat Message",
+            "user": user,
+            "session_id": session,
+            "role": "assistant",
+            "content": f"[DOC_CREATED]|{target_doctype}|{result.get('name')}" if isinstance(result, dict) else "[DOC_CREATED]",
+        }).insert(ignore_permissions=True)
+        frappe.db.commit()
+    except Exception:
+        pass
+
+    return result
 
 
 # =============================================================================
@@ -542,11 +716,17 @@ def generate_preview(doctype, data):
 INTENT_MAP = {
     "create item": "Item", "add item": "Item", "item banao": "Item", "item banaiye": "Item",
     "item create": "Item", "item add": "Item", "new item": "Item", "nyaa item": "Item",
-    "create invoice": "Sales Invoice", "add invoice": "Sales Invoice", "invoice banao": "Sales Invoice",
+    "create sales invoice": "Sales Invoice", "add invoice": "Sales Invoice", "invoice banao": "Sales Invoice",
     "invoice banaiye": "Sales Invoice", "make invoice": "Sales Invoice", "bill banao": "Sales Invoice",
-    "create po": "Purchase Invoice", "add po": "Purchase Invoice", "purchase order": "Purchase Invoice",
-    "po banao": "Purchase Invoice", "po banaiye": "Purchase Invoice", "make po": "Purchase Invoice",
-    "purchase invoice": "Purchase Invoice",
+    "create sales order": "Sales Order", "add sales order": "Sales Order", "sales order banao": "Sales Order",
+    "create purchase order": "Purchase Order", "add purchase order": "Purchase Order",
+    "purchase order banao": "Purchase Order", "purchase order banaiye": "Purchase Order",
+    "make purchase order": "Purchase Order", "create po": "Purchase Order", "add po": "Purchase Order",
+    "po banao": "Purchase Order", "po banaiye": "Purchase Order", "make po": "Purchase Order",
+    "create purchase receipt": "Purchase Receipt", "add purchase receipt": "Purchase Receipt",
+    "purchase receipt banao": "Purchase Receipt", "purcahse receipt banaiye": "Purchase Receipt",
+    "create purchase invoice": "Purchase Invoice", "add purchase invoice": "Purchase Invoice",
+    "purchase invoice banao": "Purchase Invoice", "purchase invoice banaiye": "Purchase Invoice",
     "create customer": "Customer", "add customer": "Customer", "customer banao": "Customer",
     "customer banaiye": "Customer", "new customer": "Customer",
     "create supplier": "Supplier", "add supplier": "Supplier", "supplier banao": "Supplier",
@@ -558,15 +738,15 @@ INTENT_MAP = {
 
 def detect_intent(prompt):
     pl = prompt.lower().strip()
-    for kw, doctype in INTENT_MAP.items():
+    # Sort keys longest-first so more specific phrases (e.g. "purchase invoice")
+    # match before shorter ones (e.g. "invoice" or "po").
+    for kw, doctype in sorted(INTENT_MAP.items(), key=lambda item: -len(item[0])):
         if kw in pl:
             return doctype
     if re.search(r'\b(add|create|banao|banaiye)\b.*\b(item|product|itm)\b', pl):
         return "Item"
     if re.search(r'\b(add|create|banao|banaiye|make)\b.*\b(invoice|bill)\b', pl):
         return "Sales Invoice"
-    if re.search(r'\b(add|create|banao|banaiye|make)\b.*\b(po|purchase)\b', pl):
-        return "Purchase Invoice"
     if re.search(r'\b(add|create|banao|banaiye)\b.*\b(customer|client)\b', pl):
         return "Customer"
     if re.search(r'\b(add|create|banao|banaiye)\b.*\b(supplier|vendor)\b', pl):
@@ -579,7 +759,118 @@ def detect_intent(prompt):
     # Stock with qty and price: "20 leter price", "100 kg rate"
     if re.search(r'\b\d+\s*(kg|liter|litre|leters|liters|gram|gm|ml|mm|meter|inch|leter)\b.+\b(price|rate|cost|keemat)\b', pl):
         return "Item"
+    # "po" alone → Purchase Order (explicit). "purchase" alone is ambiguous → None (clarification needed)
+    if re.search(r'\b(add|create|banao|banaiye|make)\b.*\bpo\b', pl) and not re.search(r'\b(invoice|receipt|order)\b', pl):
+        return "Purchase Order"
+    # bare "purchase" or "buy" with no document type → ambiguous, return None for clarification
     return None
+
+
+# =============================================================================
+# ENTITY RESOLUTION (exact + fuzzy, with user selection)
+# =============================================================================
+
+def resolve_item(name, mcp=None, limit=5):
+    """Resolve an item name/code to ERPNext Item records.
+
+    Tries exact code match first, then fuzzy name search. Returns a list of
+    candidate dicts with name, item_code, item_name, stock_uom, standard_rate.
+    Caller should present candidates and ask user to pick when multiple match.
+    """
+    if not name:
+        return []
+    if mcp is None:
+        mcp = FrappeMCP()
+    # 1. Exact code match
+    code = name.strip().upper()
+    by_code = frappe.db.get_value("Item", {"item_code": code}, ["name", "item_code", "item_name", "stock_uom", "standard_rate"], as_dict=True)
+    if by_code:
+        return [by_code]
+    # 2. Exact item_name match
+    by_name = frappe.db.get_value("Item", {"item_name": name.strip()}, ["name", "item_code", "item_name", "stock_uom", "standard_rate"], as_dict=True)
+    if by_name:
+        return [by_name]
+    # 3. Fuzzy search via MCP (now permission-safe)
+    found = mcp.call_tool("search_documents", {"query": name, "doctype": "Item", "limit": limit})
+    results = found.get("results", [])
+    candidates = []
+    for r in results:
+        d = frappe.db.get_value("Item", r["name"], ["name", "item_code", "item_name", "stock_uom", "standard_rate", "is_stock_item"], as_dict=True)
+        if d:
+            candidates.append(d)
+    # 4. Fallback: try partial name match
+    if not candidates:
+        like = "%" + name.strip() + "%"
+        rows = frappe.db.get_all("Item", filters={"item_name": ["like", like]}, fields=["name", "item_code", "item_name", "stock_uom", "standard_rate", "is_stock_item"], limit_page_length=limit)
+        candidates = rows
+    return candidates
+
+
+def resolve_party(name, doctype, mcp=None, limit=5):
+    """Resolve a customer/supplier name to ERPNext party records.
+
+    doctype: 'Customer' or 'Supplier'
+    Returns list of candidate dicts with name, customer_name/supplier_name.
+    """
+    if not name:
+        return []
+    if mcp is None:
+        mcp = FrappeMCP()
+    field = "customer_name" if doctype == "Customer" else "supplier_name"
+    # 1. Exact match
+    by_name = frappe.db.get_value(doctype, {field: name.strip()}, ["name", field], as_dict=True)
+    if by_name:
+        return [by_name]
+    # 2. Fuzzy search
+    found = mcp.call_tool("search_documents", {"query": name, "doctype": doctype, "limit": limit})
+    results = found.get("results", [])
+    candidates = []
+    for r in results:
+        d = frappe.db.get_value(doctype, r["name"], ["name", field], as_dict=True)
+        if d:
+            candidates.append(d)
+    # 3. Partial match fallback
+    if not candidates:
+        like = "%" + name.strip() + "%"
+        rows = frappe.db.get_all(doctype, filters={field: ["like", like]}, fields=["name", field], limit_page_length=limit)
+        candidates = rows
+    return candidates
+
+
+def pick_candidate(candidates, label="record", key="name"):
+    """Return a human-readable candidate list string for the user to choose from.
+
+    Caller parses the user's selection index and picks the matching candidate.
+    """
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+    lines = [f"Multiple {label} found. Please pick one:"]
+    for i, c in enumerate(candidates, 1):
+        name_val = c.get(key, c.get("item_code", c.get("customer_name", c.get("supplier_name", "-"))))
+        extra = c.get("item_name") or c.get("customer_name") or c.get("supplier_name") or ""
+        lines.append(f"  {i}. {name_val}" + (f" ({extra})" if extra and extra != name_val else ""))
+    return {"_candidates": candidates, "_prompt": "\n".join(lines)}
+
+
+# =============================================================================
+# CLARIFICATION QUESTIONS
+# =============================================================================
+
+def clarification_needed(intent, data, missing_fields):
+    """Return a clarification question string if the intent is ambiguous or
+    critical fields are missing, else None."""
+    if not intent:
+        return None
+    questions = []
+    # Ambiguous purchase intent — user said "purchase" or "buy" without specifying
+    if intent == "Purchase Invoice" and not data.get("supplier") and not data.get("items"):
+        questions.append("Did you mean a Purchase Order, Purchase Receipt, or Purchase Invoice?")
+    # Missing required fields
+    for mf in missing_fields:
+        questions.append(f"I still need: {mf}")
+    return "\n".join(questions) if questions else None
 
 
 # =============================================================================
@@ -587,24 +878,30 @@ def detect_intent(prompt):
 # =============================================================================
 
 def create_document_from_draft(doctype, data, mcp):
+    """Create an ERP document from a draft. Commits once at the end so that
+    multi-step workflows (e.g. item + opening stock) are atomic from the
+    caller's perspective. Returns the create_document result dict."""
     schema = DOCTYPE_SCHEMAS.get(doctype, {})
     defaults = schema.get("defaults", {})
     for k, v in defaults.items():
         if k not in data or data[k] is None:
             data[k] = v
     if doctype == "Item":
-        return _create_item_doc(data, mcp)
+        result = _create_item_doc(data, mcp)
     elif doctype == "Sales Invoice":
-        return _create_sales_invoice_doc(data, mcp)
+        result = _create_sales_invoice_doc(data, mcp)
     elif doctype == "Purchase Invoice":
-        return _create_purchase_invoice_doc(data, mcp)
+        result = _create_purchase_invoice_doc(data, mcp)
     elif doctype == "Customer":
-        return _create_customer_doc(data, mcp)
+        result = _create_customer_doc(data, mcp)
     elif doctype == "Supplier":
-        return _create_supplier_doc(data, mcp)
+        result = _create_supplier_doc(data, mcp)
     elif doctype == "Payment Entry":
-        return _create_payment_entry_doc(data, mcp)
-    return {"error": f"Unsupported doctype: {doctype}"}
+        result = _create_payment_entry_doc(data, mcp)
+    else:
+        return {"error": f"Unsupported doctype: {doctype}"}
+    frappe.db.commit()
+    return result
 
 
 def _create_item_doc(data, mcp):
@@ -634,7 +931,6 @@ def _create_item_doc(data, mcp):
         se = mcp.call_tool("create_document", {"doctype": "Stock Entry", "data": {"doctype": "Stock Entry", "stock_entry_type": "Material Receipt", "company": frappe.defaults.get_global_default("company"), "items": [{"item_code": result["name"], "qty": data["opening_stock"], "t_warehouse": wh, "basic_rate": data.get("standard_rate", 0)}]}})
         if "error" not in se:
             result["stock_entry"] = se.get("name")
-    frappe.db.commit()
     return result
 
 
@@ -661,7 +957,6 @@ def _create_sales_invoice_doc(data, mcp):
     result = mcp.call_tool("create_document", {"doctype": "Sales Invoice", "data": si_data})
     if "error" in result:
         return result
-    frappe.db.commit()
     result["print_url"] = f"/api/method/frappe.utils.print_format.download_pdf?doctype=Sales%20Invoice&name={result.get('name')}&format=Standard"
     return result
 
@@ -689,7 +984,6 @@ def _create_purchase_invoice_doc(data, mcp):
     result = mcp.call_tool("create_document", {"doctype": "Purchase Invoice", "data": pi_data})
     if "error" in result:
         return result
-    frappe.db.commit()
     result["print_url"] = f"/api/method/frappe.utils.print_format.download_pdf?doctype=Purchase%20Invoice&name={result.get('name')}&format=Standard"
     return result
 
@@ -704,8 +998,6 @@ def _create_customer_doc(data, mcp):
     if data.get("email"):
         doc_data["email_id"] = data["email"]
     result = mcp.call_tool("create_document", {"doctype": "Customer", "data": doc_data})
-    if "error" not in result:
-        frappe.db.commit()
     return result
 
 
@@ -719,8 +1011,6 @@ def _create_supplier_doc(data, mcp):
     if data.get("email"):
         doc_data["email_id"] = data["email"]
     result = mcp.call_tool("create_document", {"doctype": "Supplier", "data": doc_data})
-    if "error" not in result:
-        frappe.db.commit()
     return result
 
 
@@ -733,6 +1023,4 @@ def _create_payment_entry_doc(data, mcp):
     if data.get("reference_no"):
         doc_data["reference_no"] = data["reference_no"]
     result = mcp.call_tool("create_document", {"doctype": "Payment Entry", "data": doc_data})
-    if "error" not in result:
-        frappe.db.commit()
     return result 
