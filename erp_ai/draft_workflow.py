@@ -257,8 +257,14 @@ def extract_item_fields(prompt):
 
     # Item name - extract words after "item" until price/stock/group or number+unit
     _name_patterns = [
-        r'(?:add|create|banao|banaiye)\s+(?:a\s+|new\s+)?(?:item|product|itm)\s+([A-Za-z][A-Za-z0-9 .&]+?)(?=\s+(?:price|rate|cost|keemat|per|stock|qty|quantity|group|category|@)\b|\s+\d+\s*(?:mm|cm|meter|inch|foot|feet|kg|gram|gm|g|pcs|nos|unit)\b|\s*[,;]|$)',
+        # "add item NAME ..."
+        r'(?:add|create|banao|banaiye)\s+(?:a\s+|new\s+)?(?:item|product|itm)\s+([A-Za-z][A-Za-z0-9 .&]+?)(?=\s+(?:price|rate|cost|keemat|per|stock|qty|quantity|group|category|@)\b|\s+\d+\s*(?:mm|cm|meter|inch|foot|feet|kg|gram|gm|g|pcs|nos|unit|liter|litre|ml)\b|\s*[,;]|$)',
+        # "NAME resived/recived 20 leter" (name first)
+        r'^([A-Za-z][A-Za-z0-9 .&]{2,30}?)\s+(?:resived|recived|resiv|reciv|aa gaya|milay|mile)\s+\d+\s*(?:kg|liter|litre|leters|liters|gram|gm|ml|mm|meter|inch|foot|piece|leter)\b',
+        # "named NAME ..."
         r'(?:named|name|called|ka naam|naam)\s+([A-Za-z][A-Za-z0-9 .&]+?)(?=\s+(?:price|rate|cost|keemat|per|stock|qty|quantity|group|category)\b|\s+\d+\s*(?:mm|cm|meter|inch|foot|feet|kg|gram|gm|g)\b|\s*[,;]|$)',
+        # "lubrication oil 20 liter..." (leading words before quantity+unit)
+        r'^([a-z][a-z0-9 .&]+?)\s+\d+\s*(?:kg|kilo|kilogram|gram|gm|g|mm|millimeter|cm|centimeter|meter|inch|foot|feet|literal|liter|litre|ml|millilitre|pcs|nos|unit)',
     ]
     for _pat in _name_patterns:
         m = re.search(_pat, p, re.I)
@@ -270,35 +276,63 @@ def extract_item_fields(prompt):
                 break
 
     # Item group
-    m = re.search(r'(?:group|category)[:]?\s*([^,;.]+?)(?:\s*(?:price|rate|cost|keemat|py|stock|qty|quantity|opening)|$)', p, re.I)
+    m = re.search(r'(?:group|category)[:]?\s*([^,;.]+?)(?:\s*(?:price|rate|cost|keemat|py|stock|qty|quantity|opening)\b|$)', p, re.I)
     if m:
         data["item_group"] = m.group(1).strip()
 
-    # Price with unit: "price is 20 per mm", "20 pkr per gram", "20 per kg", "per 1mm"
-    m = re.search(r'(?:price|rate|cost|keemat|py)?\s*(?:is|=|:)?\s*([0-9][0-9,.]*)\s*(?:rs|rupees|pkr|/-)?\s*(?:per|/)\s*(?:[0-9]+\s*)?(gram|gm|g|kg|kilo|kilogram|mm|millimeter|cm|centimeter|meter|inch|foot|feet|piece|unit|nos)', p, re.I)
+    # Price patterns: "20 per gram", "10 pkr on 150 ml", "price is 20 per mm"
+    # First try: "X pkr on Y unit" (price for a quantity)
+    m = re.search(r'(?:price|rate|cost|keemat|py)?\s*(?:is|=|:)?\s*([0-9][0-9,.]*)\s*(?:rs|rupees|pkr|/-)?\s*(?:per|on)\s*([0-9][0-9,.]*)\s*(ml|millilitre|liter|litre|leter|leters|liters|litres|l|gram|gm|g|kg|mm|cm|meter|inch|foot|piece|unit|nos)', p, re.I)
     if m:
-        data["standard_rate"] = float(m.group(1).replace(",", ""))
-        unit = m.group(2).lower()
-        uom_map = {
-            "gram": "Gram", "gm": "Gram", "g": "Gram",
-            "kg": "Kg", "kilo": "Kg", "kilogram": "Kg",
-            "mm": "Millimeter", "millimeter": "Millimeter",
-            "cm": "Centimeter", "centimeter": "Centimeter",
-            "meter": "Meter",
-            "inch": "Inch", "foot": "Foot", "feet": "Foot",
-            "piece": "Nos", "unit": "Nos", "nos": "Nos",
-        }
+        price_val = float(m.group(1).replace(",", ""))
+        qty_val = float(m.group(2).replace(",", ""))
+        unit = m.group(3).lower()
+        if qty_val > 0:
+            data["standard_rate"] = round(price_val / qty_val, 4)  # Price per unit
+        else:
+            data["standard_rate"] = price_val
+        uom_map = {"ml": "Millilitre", "millilitre": "Millilitre", "liter": "Litre", "litre": "Litre", "l": "Litre", "leter": "Litre", "leters": "Litre", "liters": "Litre", "litres": "Litre",
+                   "gram": "Gram", "gm": "Gram", "g": "Gram", "kg": "Kg",
+                   "mm": "Millimeter", "cm": "Centimeter", "meter": "Meter",
+                   "inch": "Inch", "foot": "Foot", "piece": "Nos", "unit": "Nos", "nos": "Nos"}
         data["stock_uom"] = uom_map.get(unit, "Nos")
     else:
-        # Simple price
-        m = re.search(r'(?:price|rate|cost|keemat|py)\s*(?:is|=|:|ki hai)\s*([0-9][0-9,.]*)', p, re.I) or \
-            re.search(r'(?:price|rate|cost|keemat|py)[:=]?\s*([0-9][0-9,.]*)', p, re.I) or \
-            re.search(r'([0-9][0-9,.]*)\s*(?:rs|rupees|pkr|/-)', p, re.I)
+        # Simple per-unit: "20 per gram"
+        m = re.search(r'(?:price|rate|cost|keemat|py)?\s*(?:is|=|:)?\s*([0-9][0-9,.]*)\s*(?:rs|rupees|pkr|/-)?\s*(?:per|on)\s*(?:[0-9]+\s*)?(gram|gm|g|kg|kilo|kilogram|mm|millimeter|cm|centimeter|meter|inch|foot|feet|piece|unit|nos|ml|millilitre|liter|litre|l)', p, re.I)
         if m:
             data["standard_rate"] = float(m.group(1).replace(",", ""))
-
-    # Stock with unit: "4kg", "4 kg", "we have 4kg", "4000 grams", "12 inches"
-    m = re.search(r'(?:we have|stock|qty|quantity|opening|received|milay|mile|aa gaya)?\s*([0-9][0-9,.]*)\s*(kg|kilo|kilogram|gram|gm|g|mm|millimeter|cm|centimeter|meter|inch|foot|feet)', p, re.I)
+            unit = m.group(2).lower()
+            uom_map = {"gram": "Gram", "gm": "Gram", "g": "Gram", "kg": "Kg", "kilo": "Kg", "kilogram": "Kg",
+                       "mm": "Millimeter", "millimeter": "Millimeter", "cm": "Centimeter", "centimeter": "Centimeter",
+                       "meter": "Meter", "inch": "Inch", "foot": "Foot", "feet": "Foot",
+                       "piece": "Nos", "unit": "Nos", "nos": "Nos",
+                       "ml": "Millilitre", "millilitre": "Millilitre", "liter": "Litre", "litre": "Litre", "l": "Litre"}
+            data["stock_uom"] = uom_map.get(unit, "Nos")
+        else:
+            # Simple price
+            m = re.search(r'(?:price|rate|cost|keemat|py)\s*(?:is|=|:|ki hai)\s*([0-9][0-9,.]*)', p, re.I) or \
+                re.search(r'(?:price|rate|cost|keemat|py)[:=]?\s*([0-9][0-9,.]*)', p, re.I) or \
+                re.search(r'([0-9][0-9,.]*)\s*(?:rs|rupees|pkr|/-)\b', p, re.I)
+            if m:
+                data["standard_rate"] = float(m.group(1).replace(",", ""))
+    # Stock with unit: "4kg", "4 kg", "we have 4kg", "4000 grams", "12 inches", "20 leter"
+    # Prefer "stock is X unit" and "we have X unit" patterns, fall back to last qty+unit
+    m = re.search(r'(?:stock|qty|quantity|opening|received|milay|mile|we have)\s+(?:is|=|:)?\s*([0-9][0-9,.]*)\s*(kg|kilo|kilogram|gram|gm|g|mm|millimeter|cm|centimeter|meter|inch|foot|feet|liter|litre|leter|leters|liters|litres|l|ml|millilitre)\b', p, re.I)
+    if not m:
+        # Fall back: get all matches of "quantity unit", prefer the one with liter/gram (larger units)
+        matches = list(re.finditer(r'([0-9][0-9,.]*)\s*(kg|kilo|kilogram|gram|gm|g|mm|millimeter|cm|centimeter|meter|inch|foot|feet|literal|liter|litre|leter|leters|liters|litres|l|ml|millilitre|pcs|nos|unit)', p, re.I))
+        # Prefer kg/liter/liter over ml/gram for stock
+        for match in reversed(matches):
+            unit = match.group(2).lower()
+            if unit in ('kg', 'kilo', 'kilogram', 'literal', 'liter', 'litre', 'leter', 'leters', 'liters', 'litres'):
+                m = match
+                break
+        else:
+            if matches:
+                m = matches[-1]  # Take the last one
+    if not m:
+        # Still no match, try simple search
+        m = re.search(r'(?:we have|stock|qty|quantity|opening|received|milay|mile|aa gaya)?\s*([0-9][0-9,.]*)\s*(kg|kilo|kilogram|gram|gm|g|mm|millimeter|cm|centimeter|meter|inch|foot|feet|liter|litre|leter|leters|liters|litres|l|ml|millilitre)\b', p, re.I)
     if m:
         qty = float(m.group(1).replace(",", ""))
         unit = m.group(2).lower()
@@ -309,6 +343,8 @@ def extract_item_fields(prompt):
             "cm": "Centimeter", "centimeter": "Centimeter",
             "meter": "Meter",
             "inch": "Inch", "foot": "Foot", "feet": "Foot",
+            "liter": "Litre", "litre": "Litre", "l": "Litre", "leter": "Litre", "leters": "Litre", "liters": "Litre", "litres": "Litre",
+            "ml": "Millilitre", "millilitre": "Millilitre",
         }
         stock_uom = uom_map.get(unit, "Nos")
         # Convert if UOM already set from price
@@ -326,7 +362,7 @@ def extract_item_fields(prompt):
     else:
         # Simple stock
         m = re.search(r'(?:stock|qty|quantity|opening|received|milay|mile)\s*(?:of|is|=|:)?\s*([0-9][0-9,.]*)', p, re.I) or \
-            re.search(r'([0-9][0-9,.]*)\s*(?:pcs|nos|units|pieces|dozen)', p, re.I)
+            re.search(r'([0-9][0-9,.]*)\s*(?:pcs|nos|units|pieces|dozen)\b', p, re.I)
         if m:
             data["opening_stock"] = float(m.group(1).replace(",", ""))
 
@@ -425,7 +461,11 @@ def generate_preview(doctype, data):
         lines.append("📦 New Item Preview:")
         lines.append(f"  Name: {data.get('item_name', '-')}")
         lines.append(f"  Group: {data.get('item_group', 'Products')}")
-        lines.append(f"  Price: {data.get('standard_rate', 0):,.0f}")
+        rate = data.get('standard_rate', 0)
+        if isinstance(rate, float) and rate < 1:
+            lines.append(f"  Price: {rate:.4f}")
+        else:
+            lines.append(f"  Price: {rate:,.0f}")
         lines.append(f"  UOM: {data.get('stock_uom', 'Nos')}")
         if data.get("opening_stock"):
             lines.append(f"  Opening Stock: {data['opening_stock']:,.0f}")
@@ -533,6 +573,12 @@ def detect_intent(prompt):
         return "Supplier"
     if re.search(r'\b(payment|receive|paid|pay)\b', pl) and re.search(r'\b(from|to|se|ko)\b', pl):
         return "Payment Entry"
+    # Item arrival: "resived 20 leter", "recived 100 kg", "aa gaya 50 liter"
+    if re.search(r'\b(resived|recived|resiv|reciv|aa gaya|aagya|milay|mile)\b.+\b(kg|liter|litre|leters|liters|gram|gm|ml|mm|meter|inch|leter)\b', pl):
+        return "Item"
+    # Stock with qty and price: "20 leter price", "100 kg rate"
+    if re.search(r'\b\d+\s*(kg|liter|litre|leters|liters|gram|gm|ml|mm|meter|inch|leter)\b.+\b(price|rate|cost|keemat)\b', pl):
+        return "Item"
     return None
 
 
