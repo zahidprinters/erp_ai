@@ -77,10 +77,8 @@ class TestPhase1Security(unittest.TestCase):
 class TestPhase2DraftWorkflow(unittest.TestCase):
     """Test Phase 2 draft persistence with AI Assistant Action DocType."""
 
-    @pytest.fixture(autouse=True)
-    def cleanup(self):
+    def tearDown(self):
         """Clean up test data after each test."""
-        yield
         # Clean up all test-session AI Assistant Actions
         for name in frappe.db.get_all(
             "AI Assistant Action",
