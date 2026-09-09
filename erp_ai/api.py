@@ -11,6 +11,9 @@ from frappe.utils import fmt_money
 
 from erp_ai.mcp.server import FrappeMCP
 from erp_ai.knowledge.erpnext_kb import get_knowledge_excerpt, get_kb_summary
+from erp_ai.draft_workflow import (detect_intent, extract_item_fields, extract_invoice_fields,
+    extract_party_fields, get_missing_fields, get_missing_labels, generate_preview,
+    save_draft, get_draft, create_document_from_draft, DOCTYPE_SCHEMAS)
 OLLAMA_URL = "http://localhost:11434/api/generate"
 DEFAULT_MODEL = "qwen2.5:1.5b"
 
@@ -639,13 +642,52 @@ def _process_with_mcp(prompt, session, user, model):
     mcp = FrappeMCP()
 
     # ---------- CONFIRM / YES (proceed with pending action) ----------
-    if pl in ['yes', 'yeah', 'yep', 'haan', 'han', 'ok', 'okay', 'sure', 'bilkul', 'thik hai']:
-        # Look up stored pending action
+    if pl in ['submit', 'finalize', 'jama kar', 'jama', 'submit kar', 'final']:
+        # ===== SUBMIT a previously created document =====
+        _doc_msg = frappe.db.get_all("AI Chat Message",
+            filters={"session_id": session or "", "role": "assistant", "content": ["like", "[DOC_CREATED]%"]},
+            fields=["content"], order_by="creation desc", limit=1)
+        if _doc_msg:
+            _parts = _doc_msg[0].content.replace("[DOC_CREATED]|", "").split("|")
+            if len(_parts) >= 2:
+                _doctype = _parts[0]
+                _docname = _parts[1]
+                _result = mcp.call_tool("submit_document", {"doctype": _doctype, "name": _docname})
+                if "error" in _result:
+                    return f"❌ Could not submit: {_result['error']}"
+                return f"✅ {_doctype} **{_docname}** submitted successfully!"
+        return "Nothing to submit. Create something first."
+
+    if pl in ['yes', 'yeah', 'yep', 'haan', 'han', 'ok', 'okay', 'sure', 'bilkul', 'thik hai', 'confirm']:
+        # ===== DRAFT WORKFLOW: Confirm & create document =====
+        _doctype, _draft_data = get_draft(session)
+        if _doctype:
+            _result = create_document_from_draft(_doctype, _draft_data, mcp)
+            if "error" in _result:
+                if _result.get("duplicate"):
+                    return f"⚠️ {_result['error']}. Use a different name."
+                return f"❌ Could not create {_doctype}: {_result['error']}"
+            # Success!
+            _name = _result.get("name", "?")
+            _extra = ""
+            if _result.get("stock_entry"):
+                _extra = f" + Stock Entry {_result['stock_entry']} (DRAFT)"
+            _print = _result.get("print_url", "")
+            _print_hint = f"\n🖨️ Print: {_print}" if _print else ""
+            # Store doc reference for submit handler
+            frappe.get_doc({
+                "doctype": "AI Chat Message", "user": frappe.session.user,
+                "session_id": session or "", "role": "assistant",
+                "content": f"[DOC_CREATED]|{_doctype}|{_name}"
+            }).insert(ignore_permissions=True)
+            frappe.db.commit()
+            return (f"✅ {_doctype} created: **{_name}** (Draft){_extra}\n"
+                    f"   Say '**submit**' to finalize, or tell me what to change.{_print_hint}")
+        # ===== LEGACY: Pending item update (price/stock) =====
         _pending = frappe.db.get_all("AI Chat Message",
             filters={"session_id": session or "", "role": "user", "content": ["like", "[PENDING]%"]},
             fields=["content"], order_by="creation desc", limit=1)
         if _pending:
-            # Parse: [PENDING]|item_code|price|qty
             _parts = _pending[0].content.replace("[PENDING]|", "").split("|")
             if len(_parts) >= 3:
                 _item_code = _parts[0].strip()
@@ -654,32 +696,102 @@ def _process_with_mcp(prompt, session, user, model):
                 _item = frappe.db.get_value("Item", _item_code, ["name", "item_name", "standard_rate"], as_dict=True)
                 if _item:
                     _actions_done = []
-                    # Update price if provided and different
                     if _price_val and _price_val != "0":
                         _new_rate = float(_price_val)
                         if _new_rate != _item.standard_rate:
                             frappe.db.set_value("Item", _item.name, "standard_rate", _new_rate)
                             _actions_done.append(f"price updated to {_new_rate:,.0f}")
-                    # Add stock if provided
                     if _qty_val and _qty_val != "0":
                         _add_qty = float(_qty_val)
                         _t_wh = "Stores - SPI" if frappe.db.exists("Warehouse", "Stores - SPI") else "Stores"
                         _se = mcp.call_tool("create_document", {"doctype": "Stock Entry", "data": {
-                            "doctype": "Stock Entry",
-                            "stock_entry_type": "Material Receipt",
+                            "doctype": "Stock Entry", "stock_entry_type": "Material Receipt",
                             "company": frappe.defaults.get_global_default("company"),
                             "items": [{"item_code": _item.name, "qty": _add_qty, "t_warehouse": _t_wh, "basic_rate": _item.standard_rate}]}})
-
                         if "error" not in _se:
                             _actions_done.append(f"stock +{_add_qty:,.0f} added (Stock Entry {_se.get('name')} - DRAFT)")
                     if _actions_done:
                         frappe.db.commit()
-                        return f"Updated {_item.item_name}: {', '.join(_actions_done)}. Submit the Stock Entry to confirm."
+                        return f"✅ Updated {_item.item_name}: {', '.join(_actions_done)}."
                     else:
-                        return f"No changes needed for {_item.item_name}. Values already match."
-        return "Nothing to confirm. Please specify what you'd like to do."
+                        return f"No changes needed for {_item.item_name}."
+        return "Nothing to confirm. Please tell me what you'd like to do."
 
-    # ---------- CREATE INTENTS ----------
+    # ---------- MODIFY a draft (if active) ----------
+    _existing_doctype, _existing_draft = get_draft(session)
+    if _existing_doctype:
+        # User is providing more info or modifying the active draft
+        _updated, _changed = False, False
+        # Try to extract updates based on doctype
+        if _existing_doctype == "Item":
+            _new_data = extract_item_fields(prompt)
+            for k, v in _new_data.items():
+                if v is not None and v != "" and v != 0:
+                    _existing_draft[k] = v
+                    _changed = True
+        elif _existing_doctype in ("Sales Invoice", "Purchase Invoice"):
+            _new_data = extract_invoice_fields(prompt)
+            for k, v in _new_data.items():
+                if v is not None and v != "":
+                    _existing_draft[k] = v
+                    _changed = True
+        elif _existing_doctype == "Customer":
+            _new_data = extract_party_fields(prompt, "customer")
+            for k, v in _new_data.items():
+                if v is not None and v != "":
+                    _existing_draft[k] = v
+                    _changed = True
+        elif _existing_doctype == "Supplier":
+            _new_data = extract_party_fields(prompt, "supplier")
+            for k, v in _new_data.items():
+                if v is not None and v != "":
+                    _existing_draft[k] = v
+                    _changed = True
+        if _changed:
+            save_draft(session, _existing_doctype, _existing_draft)
+            _missing = get_missing_fields(_existing_doctype, _existing_draft)
+            _preview = generate_preview(_existing_doctype, _existing_draft)
+            if _missing:
+                _labels = get_missing_labels(_existing_doctype, _missing)
+                return (f"{_preview}\n\n"
+                        f"📝 Still need: {', '.join(_labels)}\n"
+                        f"   Or say '**confirm**' to save with what we have.")
+            return (f"{_preview}\n\n"
+                    f"✅ All details ready! Say '**confirm**' to save, or tell me what to change.")
+        # No changes detected — fall through to new intent detection
+
+    # ---------- NEW INTENT DETECTION (with draft workflow) ----------
+    _intent = detect_intent(prompt)
+    if _intent:
+        # Extract fields based on intent
+        _data = {}
+        if _intent == "Item":
+            _data = extract_item_fields(prompt)
+        elif _intent in ("Sales Invoice", "Purchase Invoice"):
+            _invoice_data = extract_invoice_fields(prompt)
+            if _intent == "Purchase Invoice" and "customer" in _invoice_data:
+                _invoice_data["supplier"] = _invoice_data.pop("customer")
+            _data = _invoice_data
+        elif _intent == "Customer":
+            _data = extract_party_fields(prompt, "customer")
+        elif _intent == "Supplier":
+            _data = extract_party_fields(prompt, "supplier")
+        # Check for missing required fields
+        _missing = get_missing_fields(_intent, _data)
+        # Save draft
+        save_draft(session, _intent, _data)
+        # Show preview + ask for missing
+        _preview = generate_preview(_intent, _data)
+        if _missing:
+            _labels = get_missing_labels(_intent, _missing)
+            return (f"{_preview}\n\n"
+                    f"📝 I need: {', '.join(_labels)}\n"
+                    f"   Example: {DOCTYPE_SCHEMAS.get(_intent, {}).get('examples', '')}\n"
+                    f"   Or say '**confirm**' to save with defaults.")
+        return (f"{_preview}\n\n"
+                f"✅ Ready! Say '**confirm**' to save, or tell me what to change.")
+
+    # ---------- CREATE INTENTS (legacy fallback) ----------
     # Broad: "add wall fans price 450" or "add relay we received 4 units" (no "item" keyword needed)
     _add_price = _re.search(r'\b(add|create|banao|banaiye)\b.{1,40}?\b(price|rate|keemat)\b', pl)
     _add_stock = _re.search(r'\b(add|create|banao|banaiye)\b.{1,40}?\b(received|reciv|resiv|stock|qty|quantity|unit|milay|mile|aa gaya|aagya)\b', pl)
