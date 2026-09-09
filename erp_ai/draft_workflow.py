@@ -157,7 +157,9 @@ def clear_draft(session):
 def extract_item_fields(prompt):
     """Extract item fields from natural language."""
     p = prompt
+    pl = p.lower()
     data = {}
+
     # Item name
     m = re.search(r'(?:named|name|called|ka naam|naam)[:]?\s*([^,;.]+?)(?:\s+(?:group|category|price|rate|cost|keemat|py|stock|qty|quantity|opening|received|for|with|in)\b|,|;|$)', p, re.I)
     if not m:
@@ -166,32 +168,72 @@ def extract_item_fields(prompt):
         m = re.search(r'(?:add|create|banao|banaiye)\s+([A-Za-z][A-Za-z0-9 .&\-]{2,40}?)(?=\s+(?:group|category|price|rate|cost|keemat|py|stock|qty|quantity|opening|received|for|with|in)\b|,|;|$)', p, re.I)
     if m:
         data["item_name"] = m.group(1).strip().rstrip(",").strip()
+
     # Item group
     m = re.search(r'(?:group|category)[:]?\s*([^,;.]+?)(?:\s*(?:price|rate|cost|keemat|py|stock|qty|quantity|opening)\b|$)', p, re.I)
     if m:
         data["item_group"] = m.group(1).strip()
-    # Price
-    m = re.search(r'(?:price|rate|cost|keemat|py)\s*(?:is|=|:|ki hai|hai|he)\s*([0-9][0-9,.]*)', p, re.I) or \
-        re.search(r'(?:price|rate|cost|keemat|py)[:=]?\s*([0-9][0-9,.]*)', p, re.I) or \
-        re.search(r'([0-9][0-9,.]*)\s*(?:rs|rupees|rupaye|pkr|/-|per)\b', p, re.I)
+
+    # Price with unit: "price is 20 per gram", "20 per kg"
+    m = re.search(r'(?:price|rate|cost|keemat|py)?\s*(?:is|=|:)?\s*([0-9][0-9,.]*)\s*(?:rs|rupees|pkr|/-)?\s*(?:per|/)\s*(gram|gm|kg|kilo|kilogram|meter|litre|piece|unit)', p, re.I)
     if m:
         data["standard_rate"] = float(m.group(1).replace(",", ""))
-    # Stock
-    m = re.search(r'(?:stock|qty|quantity|opening|received|reciv|resiv|milay|mile|aa gaya|aagya)\s*(?:of|is|=|:|ki)?\s*([0-9][0-9,.]*)', p, re.I) or \
-        re.search(r'([0-9][0-9,.]*)\s*(?:pcs|nos|units|pieces|dozen|unit)\b', p, re.I)
-    if m:
-        data["opening_stock"] = float(m.group(1).replace(",", ""))
-    # UOM
-    m = re.search(r'\b(pcs|nos|pieces|units|dozen|kg|gm|meter|litre|lit|feet|inch|set|box|bag|roll|coil)\b', p, re.I)
-    if m:
-        uom = m.group(1).lower()
-        uom_map = {"pcs": "Nos", "nos": "Nos", "pieces": "Nos", "units": "Nos",
-                   "dozen": "Dozen", "kg": "Kg", "gm": "Gram", "meter": "Meter",
-                   "litre": "Litre", "lit": "Litre", "feet": "Feet", "inch": "Inch",
-                   "set": "Set", "box": "Box", "bag": "Bag", "roll": "Roll", "coil": "Coil"}
-        data["stock_uom"] = uom_map.get(uom, uom.capitalize())
-    return data
+        unit = m.group(2).lower()
+        if unit in ("gram", "gm"):
+            data["stock_uom"] = "Gram"
+        elif unit in ("kg", "kilo", "kilogram"):
+            data["stock_uom"] = "Kg"
+        elif unit == "meter":
+            data["stock_uom"] = "Meter"
+        elif unit == "litre":
+            data["stock_uom"] = "Litre"
+        else:
+            data["stock_uom"] = "Nos"
+    else:
+        # Simple price
+        m = re.search(r'(?:price|rate|cost|keemat|py)\s*(?:is|=|:|ki hai)\s*([0-9][0-9,.]*)', p, re.I) or \
+            re.search(r'(?:price|rate|cost|keemat|py)[:=]?\s*([0-9][0-9,.]*)', p, re.I) or \
+            re.search(r'([0-9][0-9,.]*)\s*(?:rs|rupees|pkr|/-)\b', p, re.I)
+        if m:
+            data["standard_rate"] = float(m.group(1).replace(",", ""))
 
+    # Stock with unit: "4kg", "4 kg", "we have 4kg", "4000 grams"
+    m = re.search(r'(?:we have|stock|qty|quantity|opening|received|milay|mile|aa gaya)?\s*([0-9][0-9,.]*)\s*(kg|kilo|kilogram|gram|gm|g)\b', p, re.I)
+    if m:
+        qty = float(m.group(1).replace(",", ""))
+        unit = m.group(2).lower()
+        if unit in ("kg", "kilo", "kilogram"):
+            # If UOM already set to Gram (from price per gram), convert kg to grams
+            if data.get("stock_uom") == "Gram":
+                data["opening_stock"] = qty * 1000  # 4kg = 4000 grams
+            else:
+                data["opening_stock"] = qty
+                if "stock_uom" not in data:
+                    data["stock_uom"] = "Kg"
+        elif unit in ("gram", "gm", "g"):
+            data["opening_stock"] = qty
+            if "stock_uom" not in data:
+                data["stock_uom"] = "Gram"
+    else:
+        # Simple stock
+        m = re.search(r'(?:stock|qty|quantity|opening|received|milay|mile)\s*(?:of|is|=|:)?\s*([0-9][0-9,.]*)', p, re.I) or \
+            re.search(r'([0-9][0-9,.]*)\s*(?:pcs|nos|units|pieces|dozen)\b', p, re.I)
+        if m:
+            data["opening_stock"] = float(m.group(1).replace(",", ""))
+
+    # UOM fallback
+    if "stock_uom" not in data:
+        m = re.search(r'\b(pcs|nos|pieces|units|dozen|kg|gm|gram|meter|litre|lit|feet|inch|set|box|bag|roll|coil)\b', p, re.I)
+        if m:
+            uom = m.group(1).lower()
+            uom_map = {"pcs": "Nos", "nos": "Nos", "pieces": "Nos", "units": "Nos",
+                       "dozen": "Dozen", "kg": "Kg", "gm": "Gram", "gram": "Gram",
+                       "meter": "Meter", "litre": "Litre", "lit": "Litre",
+                       "feet": "Feet", "inch": "Inch", "set": "Set", "box": "Box",
+                       "bag": "Bag", "roll": "Roll", "coil": "Coil"}
+            data["stock_uom"] = uom_map.get(uom, uom.capitalize())
+
+    return data
 
 def extract_invoice_fields(prompt):
     """Extract invoice fields from natural language."""
