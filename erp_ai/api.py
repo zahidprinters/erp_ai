@@ -638,6 +638,47 @@ def _process_with_mcp(prompt, session, user, model):
     import re as _re
     mcp = FrappeMCP()
 
+    # ---------- CONFIRM / YES (proceed with pending action) ----------
+    if pl in ['yes', 'yeah', 'yep', 'haan', 'han', 'ok', 'okay', 'sure', 'bilkul', 'thik hai']:
+        # Look up stored pending action
+        _pending = frappe.db.get_all("AI Chat Message",
+            filters={"session_id": session or "", "role": "user", "content": ["like", "[PENDING]%"]},
+            fields=["content"], order_by="creation desc", limit=1)
+        if _pending:
+            # Parse: [PENDING]|item_code|price|qty
+            _parts = _pending[0].content.replace("[PENDING]|", "").split("|")
+            if len(_parts) >= 3:
+                _item_code = _parts[0].strip()
+                _price_val = _parts[1].strip()
+                _qty_val = _parts[2].strip()
+                _item = frappe.db.get_value("Item", _item_code, ["name", "item_name", "standard_rate"], as_dict=True)
+                if _item:
+                    _actions_done = []
+                    # Update price if provided and different
+                    if _price_val and _price_val != "0":
+                        _new_rate = float(_price_val)
+                        if _new_rate != _item.standard_rate:
+                            frappe.db.set_value("Item", _item.name, "standard_rate", _new_rate)
+                            _actions_done.append(f"price updated to {_new_rate:,.0f}")
+                    # Add stock if provided
+                    if _qty_val and _qty_val != "0":
+                        _add_qty = float(_qty_val)
+                        _t_wh = "Stores - SPI" if frappe.db.exists("Warehouse", "Stores - SPI") else "Stores"
+                        _se = mcp.call_tool("create_document", {"doctype": "Stock Entry", "data": {
+                            "doctype": "Stock Entry",
+                            "stock_entry_type": "Material Receipt",
+                            "company": frappe.defaults.get_global_default("company"),
+                            "items": [{"item_code": _item.name, "qty": _add_qty, "t_warehouse": _t_wh, "basic_rate": _item.standard_rate}]}})
+
+                        if "error" not in _se:
+                            _actions_done.append(f"stock +{_add_qty:,.0f} added (Stock Entry {_se.get('name')} - DRAFT)")
+                    if _actions_done:
+                        frappe.db.commit()
+                        return f"Updated {_item.item_name}: {', '.join(_actions_done)}. Submit the Stock Entry to confirm."
+                    else:
+                        return f"No changes needed for {_item.item_name}. Values already match."
+        return "Nothing to confirm. Please specify what you'd like to do."
+
     # ---------- CREATE INTENTS ----------
     # Broad: "add wall fans price 450" or "add relay we received 4 units" (no "item" keyword needed)
     _add_price = _re.search(r'\b(add|create|banao|banaiye)\b.{1,40}?\b(price|rate|keemat)\b', pl)
@@ -645,7 +686,7 @@ def _process_with_mcp(prompt, session, user, model):
     if any(kw in pl for kw in ["create item", "add item", "add a item", "add a itm", "add a new item", "new item", "new itm",
                                 "item banaiye", "item create", "item add", "item banao",
                                 "nyaa item", "item shuru"]) or _re.search(r'\b(add|create|nyaa banao)\b.*\b(item|product|itm)\b', pl) or _add_price or _add_stock:
-        return _handle_create_item(prompt, mcp)
+        return _handle_create_item(prompt, mcp, session)
 
     if any(kw in pl for kw in ["create invoice", "add invoice", "add a invoice", "new invoice",
                                 "invoice banaiye", "bill banaiye", "invoice banao", "invoice create"]):
@@ -703,7 +744,7 @@ def _process_with_mcp(prompt, session, user, model):
     return _handle_general_query(prompt, session, user, model, mcp)
 
 
-def _handle_create_item(prompt, mcp):
+def _handle_create_item(prompt, mcp, session=None):
     """Extract item details from prompt (EN/UR) and create the item."""
     import re as _re
     p = prompt
@@ -766,6 +807,36 @@ def _handle_create_item(prompt, mcp):
         return ("To create an item I need at least a name. Please reply with the details,"
                 " e.g.: 'Add item Pump Spring, group Raw Material, price 500, opening stock 100 in Stores'.\n"
                 "Or: 'Create item named Steel Rod in group Raw Materials price 100'")
+
+    # Check for duplicate
+    _existing = frappe.db.get_value("Item", {"item_name": item_name}, ["name", "item_group", "standard_rate"], as_dict=True)
+    if not _existing:
+        _existing = frappe.db.get_value("Item", {"item_code": item_name.upper()}, ["name", "item_group", "standard_rate"], as_dict=True)
+    if _existing:
+        _existing_stock = 0
+        _bin = frappe.db.get_all("Bin", filters={"item_code": _existing.name}, fields=["actual_qty", "warehouse"])
+        if _bin:
+            _existing_stock = sum(b.actual_qty or 0 for b in _bin)
+        _actions = []
+        if price is not None and price != _existing.standard_rate:
+            _actions.append(f"update price from {_existing.standard_rate:,.0f} to {price:,.0f}")
+        if qty:
+            _actions.append(f"add {qty:,.0f} units to stock (current: {_existing_stock:,.0f})")
+        if _actions:
+            # Store pending action for yes handler
+            frappe.get_doc({"doctype": "AI Chat Message", "user": frappe.session.user,
+                "session_id": session or "", "role": "user",
+                "content": f"[PENDING]|{_existing.name}|{price or 0}|{qty or 0}"
+            }).insert(ignore_permissions=True)
+            frappe.db.commit()
+            return (f"Item '{item_name}' already exists ({_existing.name}).\n"
+                    f"  Current: Group={_existing.item_group}, Rate={_existing.standard_rate:,.0f}, Stock={_existing_stock:,.0f}\n"
+                    f"  I can: {', '.join(_actions)}.\n"
+                    f"  Reply 'yes' to proceed, or 'cancel' to abort.")
+        else:
+            return (f"Item '{item_name}' already exists ({_existing.name}).\n"
+                    f"  Group={_existing.item_group}, Rate={_existing.standard_rate:,.0f}, Stock={_existing_stock:,.0f}\n"
+                    f"  Nothing to update. Specify a new price or stock to add.")
 
     code = item_name.replace(" ", "-").upper()
     # Auto-create item group if it doesn't exist
