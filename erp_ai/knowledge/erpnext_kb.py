@@ -206,3 +206,12 @@ def get_knowledge_base():
 def get_knowledge_excerpt(max_chars=12000):
     """Return knowledge base (optionally trimmed) for prompt injection."""
     return KB[:max_chars]
+
+
+# Compact quick-reference (~1.5k chars) for FAST responses.
+KB_SUMMARY = """
+ERPNext v15 (SPI ERP) facts: Sales: Lead>Quote>Sales Order>Delivery Note>Sales Invoice>Payment. SI needs customer+items(code,qty,rate); update_stock=1 moves stock. Buying: MR>PO>Purchase Receipt(creates stock in t_warehouse)>PI>Payment. Stock Entry purposes: Material Receipt/Transfer/Issue/Manufacture/Repack. Item needs item_code,item_name,item_group,stock_uom. SPI warehouses: Stores(RM), Technical Store, Finished Goods. SI submit: Dr Debtors, Cr Income+Tax; Payment: Dr Bank, Cr Debtors. Pakistan tax 17-18% (FBR POS app). States: Draft>Submitted>Cancelled; AI creates DRAFTS. Print: /api/method/frappe.utils.print_format.download_pdf?doctype=<DT>&name=<N>&format=Standard. Rules: ask missing required fields; real numbers only; brief answers; operators get steps, admins get detail; EN or Urdu."""
+
+
+def get_kb_summary():
+    return KB_SUMMARY

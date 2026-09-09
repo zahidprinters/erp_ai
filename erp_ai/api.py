@@ -10,23 +10,31 @@ import requests
 from frappe.utils import fmt_money
 
 from erp_ai.mcp.server import FrappeMCP
-from erp_ai.knowledge.erpnext_kb import get_knowledge_excerpt
+from erp_ai.knowledge.erpnext_kb import get_knowledge_excerpt, get_kb_summary
 OLLAMA_URL = "http://localhost:11434/api/generate"
 DEFAULT_MODEL = "qwen2.5:1.5b"
 
 
-def _ollama(prompt, model=None, timeout=180):
-    """Call local Ollama and return the generated text."""
+def _ollama(prompt, model=None, timeout=180, num_predict=220):
+    """Call local Ollama (fast: capped output, warm model)."""
     model = model or frappe.conf.get("ai_model") or DEFAULT_MODEL
     r = requests.post(
         OLLAMA_URL,
-        json={"model": model, "prompt": prompt, "stream": False},
+        json={
+            "model": model,
+            "prompt": prompt,
+            "stream": False,
+            "keep_alive": -1,
+            "options": {
+                "num_predict": num_predict,
+                "temperature": 0.4,
+                "num_ctx": 4096,
+            },
+        },
         timeout=timeout,
     )
     r.raise_for_status()
     return (r.json().get("response") or "").strip()
-
-
 @frappe.whitelist()
 def chat(prompt, model=None):
     """Simple AI chat.
@@ -631,9 +639,12 @@ def _process_with_mcp(prompt, session, user, model):
     mcp = FrappeMCP()
 
     # ---------- CREATE INTENTS ----------
-    if any(kw in pl for kw in ["create item", "add item", "add a item", "add a new item", "new item",
+    # Broad: "add wall fans price 450" or "add relay we received 4 units" (no "item" keyword needed)
+    _add_price = _re.search(r'\b(add|create|banao|banaiye)\b.{1,40}?\b(price|rate|keemat)\b', pl)
+    _add_stock = _re.search(r'\b(add|create|banao|banaiye)\b.{1,40}?\b(received|reciv|resiv|stock|qty|quantity|unit|milay|mile|aa gaya|aagya)\b', pl)
+    if any(kw in pl for kw in ["create item", "add item", "add a item", "add a itm", "add a new item", "new item", "new itm",
                                 "item banaiye", "item create", "item add", "item banao",
-                                "nyaa item", "item shuru"]) or _re.search(r'\b(add|create|nyaa banao)\b.*\b(item|product)\b', pl):
+                                "nyaa item", "item shuru"]) or _re.search(r'\b(add|create|nyaa banao)\b.*\b(item|product|itm)\b', pl) or _add_price or _add_stock:
         return _handle_create_item(prompt, mcp)
 
     if any(kw in pl for kw in ["create invoice", "add invoice", "add a invoice", "new invoice",
@@ -705,11 +716,22 @@ def _handle_create_item(prompt, mcp):
                 return m.group(1).strip().rstrip(',').strip()
         return None
 
+    # Guard: require at least one data keyword (price/stock/group/received)
+    _has_data = any(kw in pl for kw in ['price', 'rate', 'cost', 'keemat', 'group', 'category',
+        'stock', 'qty', 'quantity', 'opening', 'received', 'reciv', 'resiv', 'resived',
+        'recd', 'rcvd', 'milay', 'mile', 'unit', 'pcs', 'dozen'])
+    if not _has_data:
+        return ("To create an item I need at least a name and some details. Please reply with: "
+                "'Add item <name>, group <group>, price <price>, opening stock <qty>. "
+                "Example: 'Add item Pump Spring, group Raw Material, price 500, opening stock 100'")
+
     item_name = grab([
-        r'(?:named|name|called|ka naam|naam)[:]?\s*([^,;.]+?)(?:\s+(?:group|category|price|rate|cost|keemat|py|stock|qty|quantity|opening|for|with|in)\b|,|;|$)',
-        r'(?:add|create|banao|banaiye)\s*(?:a\s+|new\s+)?(?:item|product)[:\-]?\s*([A-Za-z][A-Za-z0-9 .&\-]{2,40}?)(?=\s+(?:group|category|price|rate|cost|keemat|py|stock|qty|quantity|opening|for|with|in)\b|,|;|$)',
-        r'(?:item|product)[:]?\s*([A-Za-z][A-Za-z0-9 .&\-]{2,40}?)(?=\s+(?:group|category|price|rate|cost|keemat|py|stock|qty|quantity|opening|for|with|in)\b|,|;|$)',
-        r'\b([A-Za-z][A-Za-z0-9 .&\-]{2,40}(?:springs?|bolts?|nuts?|bearings?|gaskets?|seals?|valves?|pumps?|rods?|wires?))\b',
+        r'(?:named|name|called|ka naam|naam)[:]?\s*([^,;.]+?)(?:\s+(?:group|category|price|rate|cost|keemat|py|stock|qty|quantity|opening|received|reciv|resiv|for|with|in)\b|,|;|$)',
+        r'(?:add|create|banao|banaiye)\s*(?:a\s+|new\s+)?(?:item|product)[:\-]?\s*([A-Za-z][A-Za-z0-9 .&\-]{2,40}?)(?=\s+(?:group|category|price|rate|cost|keemat|py|stock|qty|quantity|opening|received|reciv|resiv|for|with|in)\b|,|;|$)',
+        # "add wall fans 220v price is 450" -> name = "wall fans 220v"
+        r'(?:add|create|banao|banaiye)\s+([A-Za-z][A-Za-z0-9 .&\-]{2,40}?)(?=\s+(?:group|category|price|rate|cost|keemat|py|stock|qty|quantity|opening|received|reciv|resiv|unit|for|with|in)\b|,|;|$)',
+        r'(?:item|product)[:]?\s*([A-Za-z][A-Za-z0-9 .&\-]{2,40}?)(?=\s+(?:group|category|price|rate|cost|keemat|py|stock|qty|quantity|opening|received|reciv|resiv|for|with|in)\b|,|;|$)',
+        r'\b([A-Za-z][A-Za-z0-9 .&\-]{2,40}(?:fan|relay|switch|cable|pipe|motor|sensor|breaker|contactor|transformer|inverter|rectifier|capacitor|resistor|inductor|diode|transistor|pcb|board|module|assembly|kit|set|pack|box|bag|roll|coil|sheet|plate|bar|tube|hose|belt|gear|coupling|flange|nipple|elbow|tee|reducer|bush|washer|clip|clamp|bracket|frame|cover|cap|plug|socket|pin|jack|connector|terminal|ferrule|lug|hook|ring|chain|sling|shackle|thimble|swage|anchor|bolt|screw|stud|nut|pin|cotter|key|bushing|seal|o-ring|gasket|packing|fitting|duct|tray|conduit|beam|channel|angle|strip|foil|tape|film|insulation|sleeving|boot|grommet|spacer|standoff|receptacle|contact|block|rail|din|busbar|cleat|hanger|saddle|roller|guide|track|conveyor|sprocket|pulley|rack|pinion|actuator|cylinder|servo|stepper|hydraulic|pneumatic|gauge|transmitter|plc|hmi|vfd|fuse|power|supply|ups|battery|charger|converter|filter|reactor|potentiometer|thermocouple|thermistor|load|cell|pressure|flow|level|proximity|photoelectric|encoder|tachometer|vibration|position|limit|pushbutton|selector|pilot|light|horn|siren|stack|beacon|signal|junction|outlet|device|ballast|driver|led|fluorescent|halogen))\b',
     ])
 
     item_group = grab([
@@ -719,7 +741,8 @@ def _handle_create_item(prompt, mcp):
     ]) or "Products"
 
     price = None
-    m = _re.search(r'(?:price|rate|cost|keemat|py)[:=]?\s*([0-9][0-9,.]*)', p, _re.I) or \
+    m = _re.search(r'(?:price|rate|cost|keemat|py)\s*(?:is|=|:|ki hai|hai|he)\s*([0-9][0-9,.]*)', p, _re.I) or \
+            _re.search(r'(?:price|rate|cost|keemat|py)[:=]?\s*([0-9][0-9,.]*)', p, _re.I) or \
             _re.search(r'(?:price|rate|cost|keemat|py)\s+([0-9][0-9, ]*)', p, _re.I)
     if m:
         try:
@@ -728,14 +751,16 @@ def _handle_create_item(prompt, mcp):
             price = None
 
     qty = None
-    m = _re.search(r'(?:qty|quantity|opening|stock)[:]?\s*([0-9][0-9,.]*)', p, _re.I)
+    m = _re.search(r'(?:qty|quantity|opening|stock|received|reciv|resiv|resived|recd|rcvd|milay|mile|aa gaya|aagya)[:]?\s*([0-9][0-9,.]*)', p, _re.I)
+    if not m:
+        m = _re.search(r'([0-9][0-9,.]*)\s*(?:units?|pcs?|pcs|dozen|pair|set|pack|box|bag|roll|coil|sheet|plate|bar|tube|piece[s]?)', p, _re.I)
     if m:
         try:
             qty = float(m.group(1).replace(',', ''))
         except Exception:
             qty = None
 
-    uom = grab([r'(?:uom|unit)[:]?\s*([A-Za-z]{1,4})']) or "Nos"
+    uom = grab([r'(?:uom|unit)[:]\s*([A-Za-z]{1,4})']) or "Nos"
 
     if not item_name:
         return ("To create an item I need at least a name. Please reply with the details,"
@@ -1114,46 +1139,45 @@ def _handle_invoice_nl(prompt, mcp):
 
 
 def _handle_general_query(prompt, session, user, model, mcp):
-    """Handle general queries with Ollama + MCP context."""
+    """Handle general queries. FAST: summary KB by default; full KB only for how-to."""
+    import re as _re2
     apps = ", ".join(frappe.get_installed_apps())
     roles = ", ".join(frappe.get_roles())
     fullname = frappe.utils.get_fullname(user)
-    
-    # Get conversation history
+    pl = prompt.lower()
+
+    # Try fast deterministic data router first (0 ms)
+    data = _data_answer(prompt)
+    if data["ok"]:
+        return data["answer"]
+
+    # Conversation history (last 4, trimmed)
     history = frappe.get_all(
         "AI Chat Message",
         filters={"session_id": session, "user": user},
         order_by="creation desc",
-        limit_page_length=8,
+        limit_page_length=2,
         fields=["role", "content"],
     )
-    hist_text = "\n".join(f"{m.role}: {m.content}" for m in reversed(history))[:3000]
-    
-    # Build enhanced system prompt with MCP capabilities + full ERPNext knowledge
-    kb = get_knowledge_excerpt(12000)
+    hist_text = "\n".join(f"{m.role}: {m.content}" for m in reversed(history))[:600]
+
+    # KB tier: full only for guidance/how-to questions; compact summary otherwise
+    guidance = bool(_re2.search(
+        r'\b(how (do|to|can|much|does)|kaise|setup|set up|set-up|workflow|explain|guide|steps|'
+        r'procedure|process|policy|requirement|what do i need|need to|help me|difference|'
+        r'best practice|should i|tax|accounting rule|chart of accounts|create a new erp)\b', pl))
+
+    if guidance:
+        kb = get_knowledge_excerpt(9000)
+    else:
+        kb = get_kb_summary()
+
     system = (
-        f"You are the built-in AI assistant of SPI's ERPNext system, running on "
-        f"Frappe Framework v15. Installed apps: {apps}. "
-        f"The current user is {fullname} ({user}), roles: {roles}. "
-        f"You have FULL ACCESS to the ERP system. You can:\n"
-        f"- Query any data (items, customers, invoices, stock, etc.)\n"
-        f"- Create new documents (items, invoices, customers, suppliers)\n"
-        f"- Update existing documents\n"
-        f"- Print documents (generate PDFs)\n"
-        f"- Search across all documents\n\n"
-        f"Adapt your answer to this user: give administrators technical detail; "
-        f"give operators short, simple, step-by-step guidance. "
-        f"Be brief, practical and accurate. Always provide real numbers and data."
-        f"\n\n=== ERPNext SYSTEM KNOWLEDGE (use to guide users accurately) ===\n{kb}"
+        f"AI assistant in SPI ERPNext. User {fullname} ({roles}). Brief answers (max 100 words), real numbers. "
+        f"Admins: technical. Operators: short steps.\nFACTS: {kb}"
     )
-    
-    full_prompt = f"{system}\n\nConversation so far:\n{hist_text}\n\nUser: {prompt}\nAssistant:"
-    
-    # Try data router first
-    data = _data_answer(prompt)
-    if data["ok"]:
-        return data["answer"]
-    
+
+    full_prompt = f"{system}\n\nRecent chat:\n{hist_text}\n\nUser: {prompt}\nAssistant:"
     return _ollama(full_prompt, model)
 
 
