@@ -97,6 +97,80 @@ DOCTYPE_SCHEMAS = {
     },
 }
 
+# =============================================================================
+# UOM CONVERSION FACTORS (relative to base unit)
+# Base units: Gram (weight), Meter (length), Litre (volume), Nos (count)
+# =============================================================================
+
+UOM_CONVERSIONS = {
+    # Weight (base: Gram)
+    "Gram": ("weight", 1),
+    "Microgram": ("weight", 0.000001),
+    "Milligram": ("weight", 0.001),
+    "Kg": ("weight", 1000),
+    "Tonne": ("weight", 1000000),
+    "Quintal": ("weight", 100000),
+    "Carat": ("weight", 0.2),
+    "Ounce": ("weight", 28.3495),
+    "Pound": ("weight", 453.592),
+    "Stone": ("weight", 6350.29),
+    "Grain": ("weight", 0.0648),
+    "Dram": ("weight", 1.7718),
+    # Length (base: Meter)
+    "Meter": ("length", 1),
+    "Millimeter": ("length", 0.001),
+    "Centimeter": ("length", 0.01),
+    "Decimeter": ("length", 0.1),
+    "Kilometer": ("length", 1000),
+    "Inch": ("length", 0.0254),
+    "Foot": ("length", 0.3048),
+    "Yard": ("length", 0.9144),
+    "Mile": ("length", 1609.34),
+    "Fathom": ("length", 1.8288),
+    "Hand": ("length", 0.1016),
+    "Micrometer": ("length", 0.000001),
+    "Nanometer": ("length", 0.000000001),
+    # Volume (base: Litre)
+    "Litre": ("volume", 1),
+    "Millilitre": ("volume", 0.001),
+    "Centilitre": ("volume", 0.01),
+    "Decilitre": ("volume", 0.1),
+    "Cubic Meter": ("volume", 1000),
+    "Cubic Centimeter": ("volume", 0.001),
+    "Cubic Millimeter": ("volume", 0.000001),
+    "Cubic Inch": ("volume", 0.0163871),
+    "Cubic Foot": ("volume", 28.3168),
+    "Gallon (UK)": ("volume", 4.54609),
+    "Gallon Liquid (US)": ("volume", 3.78541),
+    # Count
+    "Nos": ("count", 1),
+    "Unit": ("count", 1),
+    "Pair": ("count", 1),
+    "Set": ("count", 1),
+    "Box": ("count", 1),
+    "Dozen": ("count", 12),
+    "Piece": ("count", 1),
+}
+
+
+def convert_uom(qty, from_uom, to_uom):
+    """Convert quantity from one UOM to another. Returns converted qty or None if incompatible."""
+    from_info = UOM_CONVERSIONS.get(from_uom)
+    to_info = UOM_CONVERSIONS.get(to_uom)
+    if not from_info or not to_info:
+        return None
+    if from_info[0] != to_info[0]:  # Different categories (weight vs length)
+        return None
+    # Convert: qty * from_factor / to_factor
+    return qty * from_info[1] / to_info[1]
+
+
+def get_uom_category(uom_name):
+    """Get the category of a UOM (weight, length, volume, count)."""
+    info = UOM_CONVERSIONS.get(uom_name)
+    return info[0] if info else None
+
+
 
 # =============================================================================
 # DRAFT STORE — use AI Chat Message with [DRAFT] prefix
@@ -128,6 +202,27 @@ def get_draft(session):
     if not session:
         return None, None
     key = _draft_key(session)
+    # Get last 5 user messages to check for draft or clear marker
+    msgs = frappe.db.get_all(
+        "AI Chat Message",
+        filters={"session_id": session, "role": "user"},
+        fields=["content"],
+        order_by="creation desc",
+        limit=5,
+    )
+    # Find the most recent draft (skip if cleared)
+    for msg in msgs:
+        content = msg.content or ""
+        if content.startswith(key):
+            rest = content[len(key):]
+            pipe_idx = rest.index("|")
+            doctype = rest[:pipe_idx]
+            data = json.loads(rest[pipe_idx + 1:])
+            return doctype, data
+        elif content == "[DRAFT_CLEARED]":
+            return None, None
+    return None, None
+
     msg = frappe.db.get_all(
         "AI Chat Message",
         filters={"session_id": session, "role": "user", "content": ["like", f"{key}%"]},
@@ -155,83 +250,85 @@ def clear_draft(session):
 # =============================================================================
 
 def extract_item_fields(prompt):
-    """Extract item fields from natural language."""
+    """Extract item fields from natural language with UOM support."""
     p = prompt
     pl = p.lower()
     data = {}
 
-    # Item name
-    m = re.search(r'(?:named|name|called|ka naam|naam)[:]?\s*([^,;.]+?)(?:\s+(?:group|category|price|rate|cost|keemat|py|stock|qty|quantity|opening|received|for|with|in)\b|,|;|$)', p, re.I)
-    if not m:
-        m = re.search(r'(?:add|create|banao|banaiye)\s*(?:a\s+|new\s+)?(?:item|product|itm)[:\-]?\s*([A-Za-z][A-Za-z0-9 .&\-]{2,40}?)(?=\s+(?:group|category|price|rate|cost|keemat|py|stock|qty|quantity|opening|received|for|with|in)\b|,|;|$)', p, re.I)
-    if not m:
-        m = re.search(r'(?:add|create|banao|banaiye)\s+([A-Za-z][A-Za-z0-9 .&\-]{2,40}?)(?=\s+(?:group|category|price|rate|cost|keemat|py|stock|qty|quantity|opening|received|for|with|in)\b|,|;|$)', p, re.I)
-    if m:
-        data["item_name"] = m.group(1).strip().rstrip(",").strip()
+    # Item name - extract words after "item" until price/stock/group or number+unit
+    _name_patterns = [
+        r'(?:add|create|banao|banaiye)\s+(?:a\s+|new\s+)?(?:item|product|itm)\s+([A-Za-z][A-Za-z0-9 .&]+?)(?=\s+(?:price|rate|cost|keemat|per|stock|qty|quantity|group|category|@)\b|\s+\d+\s*(?:mm|cm|meter|inch|foot|feet|kg|gram|gm|g|pcs|nos|unit)\b|\s*[,;]|$)',
+        r'(?:named|name|called|ka naam|naam)\s+([A-Za-z][A-Za-z0-9 .&]+?)(?=\s+(?:price|rate|cost|keemat|per|stock|qty|quantity|group|category)\b|\s+\d+\s*(?:mm|cm|meter|inch|foot|feet|kg|gram|gm|g)\b|\s*[,;]|$)',
+    ]
+    for _pat in _name_patterns:
+        m = re.search(_pat, p, re.I)
+        if m:
+            name = m.group(1).strip().rstrip(",").strip()
+            name = re.sub(r'\s+(?:size|sz|diameter|dia|length|len|leanth|width|height|thickness)\s*$', '', name, flags=re.I)
+            if len(name) >= 2:
+                data["item_name"] = name
+                break
 
     # Item group
-    m = re.search(r'(?:group|category)[:]?\s*([^,;.]+?)(?:\s*(?:price|rate|cost|keemat|py|stock|qty|quantity|opening)\b|$)', p, re.I)
+    m = re.search(r'(?:group|category)[:]?\s*([^,;.]+?)(?:\s*(?:price|rate|cost|keemat|py|stock|qty|quantity|opening)|$)', p, re.I)
     if m:
         data["item_group"] = m.group(1).strip()
 
-    # Price with unit: "price is 20 per gram", "20 per kg"
-    m = re.search(r'(?:price|rate|cost|keemat|py)?\s*(?:is|=|:)?\s*([0-9][0-9,.]*)\s*(?:rs|rupees|pkr|/-)?\s*(?:per|/)\s*(gram|gm|kg|kilo|kilogram|meter|litre|piece|unit)', p, re.I)
+    # Price with unit: "price is 20 per mm", "20 pkr per gram", "20 per kg", "per 1mm"
+    m = re.search(r'(?:price|rate|cost|keemat|py)?\s*(?:is|=|:)?\s*([0-9][0-9,.]*)\s*(?:rs|rupees|pkr|/-)?\s*(?:per|/)\s*(?:[0-9]+\s*)?(gram|gm|g|kg|kilo|kilogram|mm|millimeter|cm|centimeter|meter|inch|foot|feet|piece|unit|nos)', p, re.I)
     if m:
         data["standard_rate"] = float(m.group(1).replace(",", ""))
         unit = m.group(2).lower()
-        if unit in ("gram", "gm"):
-            data["stock_uom"] = "Gram"
-        elif unit in ("kg", "kilo", "kilogram"):
-            data["stock_uom"] = "Kg"
-        elif unit == "meter":
-            data["stock_uom"] = "Meter"
-        elif unit == "litre":
-            data["stock_uom"] = "Litre"
-        else:
-            data["stock_uom"] = "Nos"
+        uom_map = {
+            "gram": "Gram", "gm": "Gram", "g": "Gram",
+            "kg": "Kg", "kilo": "Kg", "kilogram": "Kg",
+            "mm": "Millimeter", "millimeter": "Millimeter",
+            "cm": "Centimeter", "centimeter": "Centimeter",
+            "meter": "Meter",
+            "inch": "Inch", "foot": "Foot", "feet": "Foot",
+            "piece": "Nos", "unit": "Nos", "nos": "Nos",
+        }
+        data["stock_uom"] = uom_map.get(unit, "Nos")
     else:
         # Simple price
         m = re.search(r'(?:price|rate|cost|keemat|py)\s*(?:is|=|:|ki hai)\s*([0-9][0-9,.]*)', p, re.I) or \
             re.search(r'(?:price|rate|cost|keemat|py)[:=]?\s*([0-9][0-9,.]*)', p, re.I) or \
-            re.search(r'([0-9][0-9,.]*)\s*(?:rs|rupees|pkr|/-)\b', p, re.I)
+            re.search(r'([0-9][0-9,.]*)\s*(?:rs|rupees|pkr|/-)', p, re.I)
         if m:
             data["standard_rate"] = float(m.group(1).replace(",", ""))
 
-    # Stock with unit: "4kg", "4 kg", "we have 4kg", "4000 grams"
-    m = re.search(r'(?:we have|stock|qty|quantity|opening|received|milay|mile|aa gaya)?\s*([0-9][0-9,.]*)\s*(kg|kilo|kilogram|gram|gm|g)\b', p, re.I)
+    # Stock with unit: "4kg", "4 kg", "we have 4kg", "4000 grams", "12 inches"
+    m = re.search(r'(?:we have|stock|qty|quantity|opening|received|milay|mile|aa gaya)?\s*([0-9][0-9,.]*)\s*(kg|kilo|kilogram|gram|gm|g|mm|millimeter|cm|centimeter|meter|inch|foot|feet)', p, re.I)
     if m:
         qty = float(m.group(1).replace(",", ""))
         unit = m.group(2).lower()
-        if unit in ("kg", "kilo", "kilogram"):
-            # If UOM already set to Gram (from price per gram), convert kg to grams
-            if data.get("stock_uom") == "Gram":
-                data["opening_stock"] = qty * 1000  # 4kg = 4000 grams
+        uom_map = {
+            "kg": "Kg", "kilo": "Kg", "kilogram": "Kg",
+            "gram": "Gram", "gm": "Gram", "g": "Gram",
+            "mm": "Millimeter", "millimeter": "Millimeter",
+            "cm": "Centimeter", "centimeter": "Centimeter",
+            "meter": "Meter",
+            "inch": "Inch", "foot": "Foot", "feet": "Foot",
+        }
+        stock_uom = uom_map.get(unit, "Nos")
+        # Convert if UOM already set from price
+        if "stock_uom" in data and data["stock_uom"] != stock_uom:
+            converted = convert_uom(qty, stock_uom, data["stock_uom"])
+            if converted is not None:
+                data["opening_stock"] = converted
             else:
                 data["opening_stock"] = qty
-                if "stock_uom" not in data:
-                    data["stock_uom"] = "Kg"
-        elif unit in ("gram", "gm", "g"):
+                data["stock_uom"] = stock_uom
+        else:
             data["opening_stock"] = qty
             if "stock_uom" not in data:
-                data["stock_uom"] = "Gram"
+                data["stock_uom"] = stock_uom
     else:
         # Simple stock
         m = re.search(r'(?:stock|qty|quantity|opening|received|milay|mile)\s*(?:of|is|=|:)?\s*([0-9][0-9,.]*)', p, re.I) or \
-            re.search(r'([0-9][0-9,.]*)\s*(?:pcs|nos|units|pieces|dozen)\b', p, re.I)
+            re.search(r'([0-9][0-9,.]*)\s*(?:pcs|nos|units|pieces|dozen)', p, re.I)
         if m:
             data["opening_stock"] = float(m.group(1).replace(",", ""))
-
-    # UOM fallback
-    if "stock_uom" not in data:
-        m = re.search(r'\b(pcs|nos|pieces|units|dozen|kg|gm|gram|meter|litre|lit|feet|inch|set|box|bag|roll|coil)\b', p, re.I)
-        if m:
-            uom = m.group(1).lower()
-            uom_map = {"pcs": "Nos", "nos": "Nos", "pieces": "Nos", "units": "Nos",
-                       "dozen": "Dozen", "kg": "Kg", "gm": "Gram", "gram": "Gram",
-                       "meter": "Meter", "litre": "Litre", "lit": "Litre",
-                       "feet": "Feet", "inch": "Inch", "set": "Set", "box": "Box",
-                       "bag": "Bag", "roll": "Roll", "coil": "Coil"}
-            data["stock_uom"] = uom_map.get(uom, uom.capitalize())
 
     return data
 

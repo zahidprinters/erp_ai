@@ -658,6 +658,20 @@ def _process_with_mcp(prompt, session, user, model):
                 return f"✅ {_doctype} **{_docname}** submitted successfully!"
         return "Nothing to submit. Create something first."
 
+    if pl in ['no', 'nah', 'nahi', 'na', 'cancel', 'radh kar', 'radh', 'delete', 'mitaao']:
+        # ===== REJECT: Clear active draft =====
+        _doctype, _ = get_draft(session)
+        if _doctype:
+            # Clear the draft by inserting a marker
+            frappe.get_doc({
+                "doctype": "AI Chat Message", "user": frappe.session.user,
+                "session_id": session or "", "role": "user",
+                "content": "[DRAFT_CLEARED]"
+            }).insert(ignore_permissions=True)
+            frappe.db.commit()
+            return f"❌ {_doctype} draft cancelled. What would you like to do instead?"
+        return "Nothing to cancel. What would you like to do?"
+
     if pl in ['yes', 'yeah', 'yep', 'haan', 'han', 'ok', 'okay', 'sure', 'bilkul', 'thik hai', 'confirm']:
         # ===== DRAFT WORKFLOW: Confirm & create document =====
         _doctype, _draft_data = get_draft(session)
