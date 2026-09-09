@@ -7,9 +7,11 @@ These tests verify Phase 1-4 improvements:
 - Phase 3: Atomicity (single commit point)
 - Phase 4: Entity resolution and clarification
 
-Run with: pytest apps/erp_ai/tests/ -v
+Run with: bench --site spi.local run-tests --app erp_ai
+       or: python -m unittest erp_ai.tests.test_erp_ai_security
 """
 
+import unittest
 import pytest
 import frappe
 import json
@@ -26,7 +28,7 @@ from erp_ai.mcp.server import (
 )
 
 
-class TestPhase1Security:
+class TestPhase1Security(unittest.TestCase):
     """Test Phase 1 security guardrails."""
 
     def test_allowed_doctypes_has_business_doctypes(self):
@@ -72,7 +74,7 @@ class TestPhase1Security:
         assert "not available" in err.lower() or "not" in err.lower()
 
 
-class TestPhase2DraftWorkflow:
+class TestPhase2DraftWorkflow(unittest.TestCase):
     """Test Phase 2 draft persistence with AI Assistant Action DocType."""
 
     @pytest.fixture(autouse=True)
@@ -260,7 +262,7 @@ class TestPhase2DraftWorkflow:
         assert len(markers) >= 1
 
 
-class TestPhase3Atomicity:
+class TestPhase3Atomicity(unittest.TestCase):
     """Test Phase 3 atomicity: single commit point in create_document_from_draft."""
 
     def test_create_document_from_draft_commits(self):
@@ -290,7 +292,7 @@ class TestPhase3Atomicity:
         frappe.db.commit()
 
 
-class TestPhase4EntityResolution:
+class TestPhase4EntityResolution(unittest.TestCase):
     """Test Phase 4 entity resolution and clarification."""
 
     def test_resolve_item_exact_code(self):
@@ -342,7 +344,7 @@ class TestPhase4EntityResolution:
             frappe.get_doc({
                 "doctype": "Customer",
                 "customer_name": test_name,
-                "customer_group": "Customer Group",
+                "customer_group": "Individual",
             }).insert()
             frappe.db.commit()
 
@@ -395,7 +397,7 @@ class TestPhase4EntityResolution:
         assert q is None
 
 
-class TestIntentDetection:
+class TestIntentDetection(unittest.TestCase):
     """Test intent detection and DOCTYPE mapping."""
 
     def test_intent_create_item(self):
@@ -435,7 +437,7 @@ class TestIntentDetection:
         assert result is None
 
 
-class TestDraftWorkflowSchemas:
+class TestDraftWorkflowSchemas(unittest.TestCase):
     """Test DOCTYPE schemas and preview generation."""
 
     def test_item_schema_exists(self):

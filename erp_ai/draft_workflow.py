@@ -246,18 +246,20 @@ def get_draft(session, user=None):
     return doctype, data
 
 
-def clear_draft(session):
+def clear_draft(session, user=None):
     """Mark draft as consumed (writes a [DRAFT_CLEARED] marker; get_draft honours it)."""
     if not session:
         return False
+    user = user or frappe.session.user
     frappe.get_doc({
         "doctype": "AI Chat Message",
-        "user": frappe.session.user,
+        "user": user,
         "session_id": session,
         "role": "user",
         "content": "[DRAFT_CLEARED]",
     }).insert(ignore_permissions=True)
     frappe.db.commit()
+    return True
     return True
 
 
