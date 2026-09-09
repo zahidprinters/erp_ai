@@ -81,13 +81,20 @@ class TestPhase2DraftWorkflow(unittest.TestCase):
     def cleanup(self):
         """Clean up test data after each test."""
         yield
-        # Clean up any test actions
+        # Clean up all test-session AI Assistant Actions
         for name in frappe.db.get_all(
             "AI Assistant Action",
-            filters={"session_id": "test-session-cleanup"},
+            filters={"session_id": ["like", "test-%"]},
             pluck="name"
         ):
             frappe.db.delete("AI Assistant Action", name)
+        # Clean up test Items created by draft workflow tests
+        for name in frappe.db.get_all(
+            "Item",
+            filters={"item_name": ["like", "%Test%"]},
+            pluck="name"
+        ):
+            frappe.db.delete("Item", name)
         frappe.db.commit()
 
     def test_create_draft_creates_action_record(self):
@@ -209,7 +216,7 @@ class TestPhase2DraftWorkflow(unittest.TestCase):
             action_id=draft["name"],
         )
         assert "error" in result
-        assert "nonce" in result["error"].lower() or "invalid" in result["error"].lower()
+        assert "mismatch" in result["error"].lower()
 
     def test_confirm_draft_rejects_expired_draft(self):
         """confirm_draft should reject expired drafts."""
@@ -345,6 +352,7 @@ class TestPhase4EntityResolution(unittest.TestCase):
                 "doctype": "Customer",
                 "customer_name": test_name,
                 "customer_group": "Individual",
+                "fbr_ntn_cnic": "TEST1234567890123",
             }).insert()
             frappe.db.commit()
 
