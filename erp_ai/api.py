@@ -791,26 +791,103 @@ def _process_with_mcp(prompt, session, user, model):
         return (f"{_preview}\n\n"
                 f"✅ Ready! Say '**confirm**' to save, or tell me what to change.")
 
-    # ---------- CREATE INTENTS (legacy fallback) ----------
-    # Broad: "add wall fans price 450" or "add relay we received 4 units" (no "item" keyword needed)
+    # ---------- CREATE INTENTS (legacy fallback → draft workflow) ----------
+    # These patterns catch cases the new intent detector might miss
     _add_price = _re.search(r'\b(add|create|banao|banaiye)\b.{1,40}?\b(price|rate|keemat)\b', pl)
     _add_stock = _re.search(r'\b(add|create|banao|banaiye)\b.{1,40}?\b(received|reciv|resiv|stock|qty|quantity|unit|milay|mile|aa gaya|aagya)\b', pl)
     if any(kw in pl for kw in ["create item", "add item", "add a item", "add a itm", "add a new item", "new item", "new itm",
                                 "item banaiye", "item create", "item add", "item banao",
                                 "nyaa item", "item shuru"]) or _re.search(r'\b(add|create|nyaa banao)\b.*\b(item|product|itm)\b', pl) or _add_price or _add_stock:
-        return _handle_create_item(prompt, mcp, session)
+        # Use draft workflow for items too
+        _data = extract_item_fields(prompt)
+        if _data.get("item_name"):
+            save_draft(session, "Item", _data)
+            _missing = get_missing_fields("Item", _data)
+            _preview = generate_preview("Item", _data)
+            if _missing:
+                _labels = get_missing_labels("Item", _missing)
+                return (f"{_preview}\n\n📝 I need: {', '.join(_labels)}\n   Or say '**confirm**' to save with defaults.")
+            return (f"{_preview}\n\n✅ Ready! Say '**confirm**' to save, or tell me what to change.")
+        return ("To create an item I need at least a name. Please reply with: "
+                "'Add item <name>, group <group>, price <price>, opening stock <qty>'.")
 
     if any(kw in pl for kw in ["create invoice", "add invoice", "add a invoice", "new invoice",
                                 "invoice banaiye", "bill banaiye", "invoice banao", "invoice create"]):
-        return _handle_invoice_nl(prompt, mcp)
+        _data = extract_invoice_fields(prompt)
+        save_draft(session, "Sales Invoice", _data)
+        _missing = get_missing_fields("Sales Invoice", _data)
+        _preview = generate_preview("Sales Invoice", _data)
+        if _missing:
+            _labels = get_missing_labels("Sales Invoice", _missing)
+            return (f"{_preview}\n\n📝 I need: {', '.join(_labels)}\n   Example: 'for ABC Traders, 2 pump springs @ 500'")
+        return (f"{_preview}\n\n✅ Ready! Say '**confirm**' to save, or tell me what to change.")
 
     if any(kw in pl for kw in ["create customer", "add customer", "new customer", "customer banaiye",
                                 "client banaiye", "customer banao", "customer add"]):
-        return _handle_create_customer(prompt, mcp)
+        _data = extract_party_fields(prompt, "customer")
+        save_draft(session, "Customer", _data)
+        _missing = get_missing_fields("Customer", _data)
+        _preview = generate_preview("Customer", _data)
+        if _missing:
+            _labels = get_missing_labels("Customer", _missing)
+            return (f"{_preview}\n\n📝 I need: {', '.join(_labels)}")
+        return (f"{_preview}\n\n✅ Ready! Say '**confirm**' to save, or tell me what to change.")
 
     if any(kw in pl for kw in ["create supplier", "add supplier", "new supplier", "supplier banaiye",
                                 "vendor banaiye", "supplier banao", "supplier add"]):
-        return _handle_create_supplier(prompt, mcp)
+        _data = extract_party_fields(prompt, "supplier")
+        save_draft(session, "Supplier", _data)
+        _missing = get_missing_fields("Supplier", _data)
+        _preview = generate_preview("Supplier", _data)
+        if _missing:
+            _labels = get_missing_labels("Supplier", _missing)
+            return (f"{_preview}\n\n📝 I need: {', '.join(_labels)}")
+        return (f"{_preview}\n\n✅ Ready! Say '**confirm**' to save, or tell me what to change.")
+
+    # ---------- VIEW DOCUMENT DETAILS ----------
+    if _re.search(r'\b(show|view|details|info|dekho|dikhhao|kya hai)\b', pl):
+        # Try to find a document name
+        _doc_match = _re.search(r'\b(show|view|details|info|dekho|dikhhao)\s+(?:of\s+)?(?:item\s+|invoice\s+|customer\s+|supplier\s+)?([A-Z][A-Z0-9\-]{2,20})', pl, re.I)
+        if _doc_match:
+            _doc_name = _doc_match.group(2).upper()
+            # Try to find in each doctype
+            for _dt in ["Item", "Customer", "Supplier", "Sales Invoice", "Purchase Invoice", "Stock Entry"]:
+                if frappe.db.exists(_dt, _doc_name):
+                    _doc = mcp.call_tool("get_document", {"doctype": _dt, "name": _doc_name})
+                    if "error" not in _doc:
+                        return _format_document_view(_dt, _doc)
+            # Try partial match
+            for _dt in ["Item", "Customer", "Supplier", "Sales Invoice", "Purchase Invoice"]:
+                _found = mcp.call_tool("query_doctype", {"doctype": _dt, "filters": {"name": ["like", f"%{_doc_name}%"]}, "fields": ["name"], "limit": 1})
+                if _found.get("count", 0) > 0:
+                    _name = _found["records"][0]["name"]
+                    _doc = mcp.call_tool("get_document", {"doctype": _dt, "name": _name})
+                    if "error" not in _doc:
+                        return _format_document_view(_dt, _doc)
+            return f"Document '{_doc_name}' not found. Check the name and try again."
+
+    # ---------- CHECK STOCK ----------
+    if _re.search(r'\b(stock|qty|quantity|how many|kitne|kitna|mila|haye)\b', pl):
+        _item_match = _re.search(r'\b(stock|qty|quantity|how many|kitne|kitna)\s+(?:of\s+)?([A-Za-z][A-Za-z0-9 ]{2,40}?)(?:\?|\s|$)', pl, re.I)
+        if _item_match:
+            _item_name = _item_match.group(2).strip()
+            _found = mcp.call_tool("search_documents", {"query": _item_name, "doctype": "Item", "limit": 3})
+            _results = _found.get("results", [])
+            if _results:
+                _item_code = _results[0]["name"]
+                _item = mcp.call_tool("query_doctype", {"doctype": "Item", "filters": {"name": _item_code}, "fields": ["item_name", "item_group", "standard_rate"], "limit": 1})
+                if _item.get("count", 0) > 0:
+                    _item_info = _item["records"][0]
+                    _bin = mcp.call_tool("query_doctype", {"doctype": "Bin", "filters": {"item_code": _item_code}, "fields": ["warehouse", "actual_qty"], "limit": 20})
+                    _bins = _bin.get("records", [])
+                    _total = sum(b.get("actual_qty", 0) or 0 for b in _bins)
+                    _lines = [f"📦 {_item_info.get('item_name', _item_code)} | Stock: **{_total:,.0f}** | Rate: {_item_info.get('standard_rate', 0):,.0f}"]
+                    if _bins:
+                        _lines.append("  Warehouses:")
+                        for b in _bins:
+                            _lines.append(f"    - {b.get('warehouse', '')}: {b.get('actual_qty', 0):,.0f}")
+                    return "\n".join(_lines)
+            return f"Item '{_item_name}' not found. Check the name or add it first."
 
     # ---------- PRINT ----------
     if _re.search(r'\b(print|pdf|receipt|challan|print kar)[a-z ]*(invoice|bill|delivery|receipt|order|note|voucher)', pl) or \
@@ -1172,6 +1249,35 @@ def _handle_search_query(prompt, mcp):
     lines = [f"- {r['doctype']}: {r['name']}" for r in records[:5]]
     return f"Search results for '{query}':\n" + "\n".join(lines)
 
+
+
+def _format_document_view(doctype, doc):
+    """Format a document dict into a readable view."""
+    lines = [f"📄 {doctype}: **{doc.get('name', '?')}**"]
+    lines.append(f"  Status: {doc.get('docstatus', 0)} (0=Draft, 1=Submitted, 2=Cancelled)")
+    if doctype == "Item":
+        lines.append(f"  Name: {doc.get('item_name', '')}")
+        lines.append(f"  Group: {doc.get('item_group', '')}")
+        lines.append(f"  Price: {doc.get('standard_rate', 0):,.0f}")
+        lines.append(f"  UOM: {doc.get('stock_uom', '')}")
+    elif doctype in ("Sales Invoice", "Purchase Invoice"):
+        _party = doc.get('customer', doc.get('supplier', ''))
+        lines.append(f"  {'Customer' if 'Sales' in doctype else 'Supplier'}: {_party}")
+        lines.append(f"  Grand Total: {doc.get('grand_total', 0):,.0f}")
+        lines.append(f"  Status: {doc.get('status', '')}")
+        if doc.get('items'):
+            lines.append("  Items:")
+            for it in doc['items'][:5]:
+                lines.append(f"    - {it.get('item_code', '')} | {it.get('qty', 0):g} × {it.get('rate', 0):,.0f}")
+    elif doctype == "Customer":
+        lines.append(f"  Name: {doc.get('customer_name', '')}")
+        lines.append(f"  Group: {doc.get('customer_group', '')}")
+        lines.append(f"  Mobile: {doc.get('mobile_no', '')}")
+    elif doctype == "Supplier":
+        lines.append(f"  Name: {doc.get('supplier_name', '')}")
+        lines.append(f"  Group: {doc.get('supplier_group', '')}")
+        lines.append(f"  Mobile: {doc.get('mobile_no', '')}")
+    return "\n".join(lines)
 
 
 def _handle_shipment_nl(prompt, mcp):
