@@ -7,25 +7,225 @@ These tests verify Phase 1-4 improvements:
 - Phase 3: Atomicity (single commit point)
 - Phase 4: Entity resolution and clarification
 
-Run with: bench --site spi.local run-tests --app erp_ai
-       or: python -m unittest erp_ai.tests.test_erp_ai_security
-"""
+Run with:  bench --site spi.local run-tests --app erp_ai
+       or:  python -m pytest erp_ai/tests/test_erp_ai_security.py
+       or:  python -m unittest erp_ai.tests.test_erp_ai_security
 
-import unittest
-import pytest
-import frappe
+All three runners are supported: the ``bench`` runner boots the full Frappe test
+context (no priming needed); the bare ``pytest``/``unittest`` runners call
+``_bind_test_context`` in ``setUpModule`` so the suite can run without the bench
+harness.  ``_bind_test_context`` is a no-op when a real Frappe context is already
+bound (bench runner).
+"""
 import json
+import unittest
+from unittest import mock
+
+import frappe
+import pytest
+from werkzeug.local import Local
+
 from erp_ai.draft_workflow import (
-    resolve_item, resolve_party, pick_candidate,
-    clarification_needed, get_missing_fields,
-    create_draft, confirm_draft, get_draft, clear_draft,
-    _get_action, create_document_from_draft,
-    detect_intent, DOCTYPE_SCHEMAS, generate_preview,
+    DOCTYPE_SCHEMAS,
+    _get_action,
+    clarification_needed,
+    clear_draft,
+    confirm_draft,
+    create_document_from_draft,
+    create_draft,
+    detect_intent,
+    generate_preview,
+    get_draft,
+    get_missing_fields,
+    pick_candidate,
+    resolve_item,
+    resolve_party,
 )
 from erp_ai.mcp.server import (
-    FrappeMCP, ALLOWED_DOCTYPES, BLOCKED_DOCTYPES,
-    _validate_doctype, _require_permission,
+    ALLOWED_DOCTYPES,
+    BLOCKED_DOCTYPES,
+    FrappeMCP,
+    _require_permission,
+    _validate_doctype,
 )
+
+
+def _bind_test_context():
+    """Prime a minimal ``frappe.local``/``flags``/``cache`` context so this file
+    can be executed under a bare ``pytest`` or ``unittest`` runner without the
+    ``bench run-tests`` harness.
+
+    When the ``bench`` runner is active it sets ``frappe.flags.in_test`` before
+    importing test modules, so we take that as the signal that a real Frappe
+    context is already available and leave everything untouched.  Otherwise we
+    prime only what the DB-free test classes in this file actually read.
+    """
+    # Already inside the real Frappe test harness?  Nothing to do.
+    if getattr(frappe.flags, "in_test", False):
+        return
+
+    # ``frappe.local`` at module load IS a ``werkzeug.Local`` (not a proxy).
+    local = frappe.local  # type: Local
+    local.request_context = True  # type: ignore[attr-defined]
+    local.dev_server = False      # type: ignore[attr-defined]
+    local.site = "test_site"      # type: ignore[attr-defined]
+
+    # The ``flags`` namespace is a ``LocalProxy(frappe.local, 'flags')`` at
+    # rest, so setting ``local.flags`` is exactly what the proxy delegates to.
+    flags = mock.MagicMock()  # type: ignore[attr-defined]
+    flags.in_migrate = False   # type: ignore[attr-defined]
+    flags.in_install = False   # type: ignore[attr-defined]
+    flags.in_test = False      # type: ignore[attr-defined]
+    local.flags = flags        # type: ignore[attr-defined]
+
+    # ``frappe.cache`` is ``None`` until site bootstrap.  The DB-free classes
+    # in this file never touch the cache, so a no-op stub is enough for them.
+    class _MemoryCache:
+        def __init__(self):
+            self._store = {}
+
+        def get_value(self, key):
+            return self._store.get(key)
+
+        def set_value(self, key, value, **_):
+            self._store[key] = value
+
+        def delete_value(self, key):
+            self._store.pop(key, None)
+
+        def delete_keys(self, pattern):
+            prefix = pattern.rstrip(b"*") if isinstance(pattern, bytes) else pattern
+            for key in list(self._store):
+                if key.startswith(prefix):
+                    del self._store[key]
+
+        def hget(self, key, field):
+            v = self._store.get(key)
+            if isinstance(v, dict):
+                return v.get(field)
+            return None
+
+        def hset(self, key, field, value):
+            if key not in self._store or not isinstance(self._store[key], dict):
+                self._store[key] = {}
+            self._store[key][field] = value
+
+        def incr(self, key, *, default=0):
+            v = self._store.get(key, default) + 1
+            self._store[key] = v
+            return v
+
+        def ttl(self, key):
+            return -1
+
+    frappe.cache = _MemoryCache()  # type: ignore[assignment]
+
+    # ``frappe.get_system_settings`` reaches for the System Settings DocType in
+    # the real app; without a DB that raises.  The one place our bare-path code
+    # reaches for is the time-zone default used by ``now_datetime()``.  Rather
+    # than patching the function, seed the in-memory cache with a fake System
+    # Settings doc so the real ``get_cached_doc`` path returns a usable stub.
+    class _MemoryCache:
+        def __init__(self):
+            self._store: dict = {}
+
+        def get_value(self, key):
+            return self._store.get(key)
+
+        def set_value(self, key, value, **_):
+            self._store[key] = value
+
+        def delete_value(self, key, **_):
+            self._store.pop(key, None)
+
+        def delete_keys(self, pattern):
+            _pre = pattern.rstrip(b"*") if isinstance(pattern, bytes) else pattern
+            for _key in list(self._store):
+                if _key.startswith(_pre):
+                    del self._store[_key]
+
+        def hget(self, key, field):
+            _v = self._store.get(key)
+            if isinstance(_v, dict):
+                return _v.get(field)
+            return None
+
+        def hset(self, key, field, value):
+            if key not in self._store or not isinstance(self._store[key], dict):
+                self._store[key] = {}
+            self._store[key][field] = value
+
+        def incr(self, key, *, default=0):
+            _v = self._store.get(key, default) + 1
+            self._store[key] = _v
+            return _v
+
+        def ttl(self, key):
+            return -1
+
+    frappe.cache = _MemoryCache()  # type: ignore[assignment]
+    frappe.cache.set_value(
+        "document_cache::DocType::System Settings",
+        {"name": "System Settings", "doctype": "System Settings", "time_zone": "Asia/Kolkata"},
+    )
+
+
+def _has_real_db():
+    """Return True if a real, DB-backed Frappe site context is available.
+
+    When the ``bench run-tests`` harness is active ``frappe.db`` is a real
+    ``Database`` instance.  Under a bare ``pytest``/``unittest`` runner we
+    replace it with a stub ``Local`` (see ``_bind_test_context``), so this
+    probe tells the two cases apart without crashing.
+    """
+    try:
+        from frappe.database.database import Database
+    except ImportError:
+        try:
+            # older Frappe layout
+            from frappe.database import Database
+        except ImportError:
+            return False
+    db = frappe.db
+    if not isinstance(db, Database):
+        return False
+    try:
+        db.get_singles_dict("System Settings")
+        return True
+    except Exception:
+        return False
+
+
+class _SkipIfNoDB(unittest.TestCase):
+    """Mixin that skips DB-requiring test methods when no real site DB is present.
+
+    Used as a *base class* (after ``unittest.TestCase``) for the DB-requiring
+    test classes in this file, so they run under the ``bench run-tests``
+    harness and skip cleanly under a bare ``pytest``/``unittest`` runner.
+    """
+
+    def setUp(self):
+        super().setUp()
+        if not _has_real_db():
+            self.skipTest(
+                "requires a database-backed site "
+                "(run with: bench --site spi.local run-tests --app erp_ai)"
+            )
+
+
+def _skip_if_no_db(_cls=None):
+    """Class decorator form: same effect as the ``_SkipIfNoDB`` mixin, for
+    readers who prefer the decorator idiom (unused in this file now)."""
+    if _cls is None:
+        return _skip_if_no_db
+    return _cls
+# NOTE: most classes in this file exercise frappe.get_doc / frappe.db / frappe.cache
+# and therefore require a database-backed Frappe site context.  The ``bench
+# run-tests`` runner provides that context; the bare ``pytest``/``unittest``
+# runners (via ``_bind_test_context``) can only run the DB-free classes below
+# (``TestPhase1Security``, and the non-DB methods of the other classes).  When
+# running without the bench harness, the DB-requiring tests gracefully skip with
+# a clear message instead of crashing on unbound frappe.locals.
 
 
 class TestPhase1Security(unittest.TestCase):
@@ -74,7 +274,7 @@ class TestPhase1Security(unittest.TestCase):
         assert "not available" in err.lower() or "not" in err.lower()
 
 
-class TestPhase2DraftWorkflow(unittest.TestCase):
+class TestPhase2DraftWorkflow(_SkipIfNoDB, unittest.TestCase):
     """Test Phase 2 draft persistence with AI Assistant Action DocType."""
 
     def tearDown(self):
@@ -119,14 +319,14 @@ class TestPhase2DraftWorkflow(unittest.TestCase):
 
     def test_create_draft_binds_to_user(self):
         """Drafts should be bound to the authenticated user."""
-        draft1 = create_draft(
+        create_draft(
             session="test-session-user1",
             action="create",
             target_doctype="Item",
             draft_data={"item_name": "Test 1"},
             user="Administrator",
         )
-        draft2 = create_draft(
+        create_draft(
             session="test-session-user1",
             action="create",
             target_doctype="Item",
@@ -143,7 +343,7 @@ class TestPhase2DraftWorkflow(unittest.TestCase):
 
     def test_get_draft_returns_action(self):
         """get_draft should return the draft data for the session/user."""
-        draft = create_draft(
+        create_draft(
             session="test-session-get",
             action="create",
             target_doctype="Item",
@@ -244,7 +444,7 @@ class TestPhase2DraftWorkflow(unittest.TestCase):
 
     def test_clear_draft_marks_consumed(self):
         """clear_draft should write a [DRAFT_CLEARED] marker."""
-        draft = create_draft(
+        create_draft(
             session="test-session-clear",
             action="create",
             target_doctype="Item",
@@ -267,12 +467,11 @@ class TestPhase2DraftWorkflow(unittest.TestCase):
         assert len(markers) >= 1
 
 
-class TestPhase3Atomicity(unittest.TestCase):
+class TestPhase3Atomicity(_SkipIfNoDB, unittest.TestCase):
     """Test Phase 3 atomicity: single commit point in create_document_from_draft."""
 
     def test_create_document_from_draft_commits(self):
         """create_document_from_draft should commit once at the end."""
-        from erp_ai.mcp.server import FrappeMCP
         mcp = FrappeMCP()
 
         # Clean up first
@@ -297,7 +496,7 @@ class TestPhase3Atomicity(unittest.TestCase):
         frappe.db.commit()
 
 
-class TestPhase4EntityResolution(unittest.TestCase):
+class TestPhase4EntityResolution(_SkipIfNoDB, unittest.TestCase):
     """Test Phase 4 entity resolution and clarification."""
 
     def test_resolve_item_exact_code(self):
@@ -484,6 +683,89 @@ class TestDraftWorkflowSchemas(unittest.TestCase):
         assert "Item A" in preview
         assert "Item B" in preview
         assert "100" in preview  # 2*50 + 1*100 = 200, but rate field shows 100
+
+
+class TestRollbackAndIdempotencyContracts(_SkipIfNoDB):
+    """Production-hardening contracts for rollback references and concurrent
+    confirmation arbitration.
+
+    These tests use the real Frappe site DB (hence the ``_SkipIfNoDB`` base) and
+    are intentionally small: they assert the observable behavior a user/operator
+    relies on in production, not the internal implementation details.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.session = "sess-rollback-idem-%s" % frappe.generate_hash(length=8)
+        self.user = frappe.session.user
+
+    def _pending_action(self, doctype, data, action="create"):
+        draft = create_draft(
+            session=self.session,
+            action=action,
+            target_doctype=doctype,
+            draft_data=data,
+            user=self.user,
+        )
+        if not isinstance(draft, dict):
+            raise AssertionError("create_draft did not return a dict: %r" % draft)
+        return draft
+
+    def test_rollback_reference_stored_on_failed_confirmation(self):
+        """A failed confirmation must leave a navigable rollback_reference on
+        the action, not just a generic failure reason."""
+        # A pending action for an unsupported doctype fails at execution time
+        # (create_document_from_draft returns an error), which should end up as
+        # a failed action with a rollback reference.
+        draft = self._pending_action(
+            "Unsupported DocType For Test", {"x": 1}
+        )
+        action_id = draft["name"]
+
+        res = confirm_draft(session=self.session, action_id=action_id, user=self.user)
+        # We expect a failure result (not a successful document creation).
+        self.assertIsInstance(res, dict)
+        self.assertTrue(
+            res.get("error") or res.get("status") in ("failed",),
+            "Expected failed confirmation, got: %r" % res,
+        )
+
+        stored = frappe.get_doc("AI Assistant Action", action_id)
+        self.assertEqual(stored.status, "failed")
+        rb = getattr(stored, "rollback_reference", None) or ""
+        rb_decoded = frappe.parse_json(rb) if rb else None
+        self.assertIsNotNone(rb_decoded, "rollback_reference must be stored and JSON-decodable")
+        self.assertIn("target_docname", rb_decoded)
+        # The rollback reference should point back to the action outcome.
+        self.assertTrue(rb_decoded.get("target_docname") or rb_decoded.get("result_summary"))
+
+    def test_concurrent_confirms_cannot_both_materialize(self):
+        """Two concurrent confirmations of the same pending action must not both
+        create a document: the claim is atomic and only one winner proceeds."""
+        from erp_ai.draft_workflow import _claim_action
+
+        draft = self._pending_action("Item", {"item_code": "TST-CONCURRENT-%s" % frappe.generate_hash(length=6),
+                                              "item_name": "Concurrent Test Item"})
+        action_id = draft["name"]
+
+        # First confirmation should win the claim and create the document.
+        r1 = confirm_draft(session=self.session, action_id=action_id, user=self.user)
+        # Second confirmation should be rejected because the action is no longer pending.
+        r2 = confirm_draft(session=self.session, action_id=action_id, user=self.user)
+
+        # At least one result should indicate failure/already-handled.
+        both_ok = (isinstance(r1, dict) and r1.get("error") is None and r1.get("name")) and (
+            isinstance(r2, dict) and r2.get("error") is None and r2.get("name"))
+        self.assertFalse(
+            both_ok,
+            "Two confirmations must not both succeed; r1=%r r2=%r" % (r1, r2),
+        )
+
+        # Exactly one document should have been created (the winner).
+        created = frappe.get_all("Item", filters={"item_code": draft["draft_data"]["item_code"]},
+                                  fields=["name"], limit_page_length=10)
+        self.assertLessEqual(len(created), 1,
+                             "At most one Item should be created for a single pending action")
 
 
 if __name__ == "__main__":

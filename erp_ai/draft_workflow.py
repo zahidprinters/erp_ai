@@ -14,89 +14,22 @@ Flow:
 
 import json
 import re
+
 import frappe
+
 from erp_ai.mcp.server import FrappeMCP
 
-# =============================================================================
-# DOCTYPE SCHEMAS — define required & optional fields for each operation
-# =============================================================================
-
-DOCTYPE_SCHEMAS = {
-    "Item": {
-        "required": ["item_name"],
-        "optional": ["item_group", "standard_rate", "stock_uom", "opening_stock", "item_code"],
-        "defaults": {"item_group": "Products", "stock_uom": "Nos", "standard_rate": 0, "is_stock_item": 1},
-        "labels": {
-            "item_name": "Item Name",
-            "item_group": "Item Group",
-            "standard_rate": "Price / Rate",
-            "stock_uom": "Unit (UOM)",
-            "opening_stock": "Opening Stock Qty",
-            "item_code": "Item Code",
-        },
-    },
-    "Sales Invoice": {
-        "required": ["customer", "items"],
-        "optional": ["due_date", "discount_percent", "taxes_and_charges", "remarks", "update_stock"],
-        "defaults": {"update_stock": 1},
-        "labels": {
-            "customer": "Customer",
-            "items": "Items",
-            "due_date": "Due Date",
-            "discount_percent": "Discount %",
-            "taxes_and_charges": "Tax Template",
-            "remarks": "Remarks",
-        },
-    },
-    "Purchase Invoice": {
-        "required": ["supplier", "items"],
-        "optional": ["due_date", "discount_percent", "taxes_and_charges", "remarks", "update_stock"],
-        "defaults": {"update_stock": 1},
-        "labels": {
-            "supplier": "Supplier",
-            "items": "Items",
-            "due_date": "Due Date",
-            "discount_percent": "Discount %",
-            "taxes_and_charges": "Tax Template",
-            "remarks": "Remarks",
-        },
-    },
-    "Customer": {
-        "required": ["customer_name"],
-        "optional": ["customer_group", "territory", "mobile_no", "email"],
-        "defaults": {"customer_group": "Commercial", "territory": "Pakistan"},
-        "labels": {
-            "customer_name": "Customer Name",
-            "customer_group": "Customer Group",
-            "territory": "Territory",
-            "mobile_no": "Mobile",
-            "email": "Email",
-        },
-    },
-    "Supplier": {
-        "required": ["supplier_name"],
-        "optional": ["supplier_group", "mobile_no", "email"],
-        "defaults": {"supplier_group": "All Supplier Groups"},
-        "labels": {
-            "supplier_name": "Supplier Name",
-            "supplier_group": "Supplier Group",
-            "mobile_no": "Mobile",
-            "email": "Email",
-        },
-    },
-    "Payment Entry": {
-        "required": ["payment_type", "party_type", "party", "paid_amount"],
-        "optional": ["reference_no", "reference_date", "remarks"],
-        "defaults": {},
-        "labels": {
-            "payment_type": "Type (Receive/Pay)",
-            "party_type": "Party Type (Customer/Supplier)",
-            "party": "Party Name",
-            "paid_amount": "Amount",
-            "reference_no": "Reference No",
-        },
-    },
-}
+# Single source of truth for doctype schemas — imported from erp_ai.schema.
+# This module owns draft/confirm/workflow logic only.
+from erp_ai.schema import (
+    DOCTYPE_SCHEMAS,
+    get_all_doctypes,
+    get_defaults,
+    get_label,
+    get_optional_fields,
+    get_required_fields,
+    get_schema,
+)
 
 # =============================================================================
 # UOM CONVERSION FACTORS (relative to base unit)
@@ -193,8 +126,9 @@ def save_draft(session, doctype, data):
         "session_id": session,
         "role": "user",
         "content": content,
-    }).insert(ignore_permissions=True)
-    frappe.db.commit()
+    }).insert()
+    # Draft markers are part of the caller's request transaction —
+    # the commit happens once at the workflow boundary, not here.
     return True
 
 
@@ -236,14 +170,6 @@ def get_draft(session, user=None):
         "expires_on": action.expires_on,
         "document_version": action.document_version,
     }
-    if not msg:
-        return None, None
-    content = msg[0].content
-    rest = content[len(key):]
-    pipe_idx = rest.index("|")
-    doctype = rest[:pipe_idx]
-    data = json.loads(rest[pipe_idx + 1:])
-    return doctype, data
 
 
 def clear_draft(session, user=None):
@@ -257,9 +183,8 @@ def clear_draft(session, user=None):
         "session_id": session,
         "role": "user",
         "content": "[DRAFT_CLEARED]",
-    }).insert(ignore_permissions=True)
-    frappe.db.commit()
-    return True
+    }).insert()
+    # Same request-boundary rule as save_draft — no commit here.
     return True
 
 
@@ -307,8 +232,8 @@ def create_draft(session, action, target_doctype, draft_data, user=None):
     Returns
     -------
     dict
-        {'name': action_name, 'nonce': nonce, 'expires_on': ...} on success,
-        or {'error': ...} on failure.
+        {'name': action_name, 'nonce': nonce, 'expires_on': ..., 'preview_hash': ...}
+        on success, or {'error': ...} on failure.
     """
     user = user or frappe.session.user
     now = frappe.utils.now_datetime()
@@ -327,53 +252,128 @@ def create_draft(session, action, target_doctype, draft_data, user=None):
             pass
 
     import secrets
-    nonce = secrets.token_hex(16)
 
-    doc = frappe.get_doc({
-        "doctype": "AI Assistant Action",
-        "user": user,
-        "session_id": str(session),
-        "action": action,
-        "target_doctype": target_doctype,
-        "status": "pending",
-        "draft_data": json.dumps(draft_data, default=str),
+    nonce = secrets.token_hex(16)
+    normalized = _normalize_draft_data(target_doctype, draft_data)
+    preview_hash = generate_preview_hash(target_doctype, normalized)
+
+    doc = frappe.get_doc(
+        {
+            "doctype": "AI Assistant Action",
+            "user": user,
+            "session_id": str(session),
+            "action": action,
+            "target_doctype": target_doctype,
+            "status": "pending",
+            "draft_data": json.dumps(normalized, default=str),
+            "nonce": nonce,
+            "expires_on": expiry.isoformat(),
+            "document_version": 1,
+            "preview_hash": preview_hash,
+        }
+    )
+    doc.insert()
+    # Creation joins the caller's transaction; confirm_draft's finalisation
+    # commit is the boundary that makes the action durable.
+    return {
+        "name": doc.name,
         "nonce": nonce,
         "expires_on": expiry.isoformat(),
-        "document_version": 1,
-    })
-    doc.insert()
-    frappe.db.commit()
-    return {"name": doc.name, "nonce": nonce, "expires_on": expiry.isoformat()}
+        "preview_hash": preview_hash,
+    }
+
+
+def _normalize_draft_data(doctype, draft_data):
+    """Return a stable copy of the draft payload used for preview hashing.
+
+    This keeps the preview hash stable even when the caller passed extra or
+    inconsistently ordered junk that does not affect execution.
+    """
+    if not isinstance(draft_data, dict):
+        return {}
+
+    schema = DOCTYPE_SCHEMAS.get(doctype, {})
+    allowed = set(schema.get("required", []) + schema.get("optional", []))
+    normalized = {}
+    for key, value in draft_data.items():
+        if key in allowed:
+            normalized[key] = value
+    return normalized
+
+
+def _claim_action(action_id):
+    """Atomically transition a pending AI Assistant Action to ``processing``.
+
+    The claim is a conditional UPDATE (``status = 'pending'`` guard), so
+    exactly one concurrent confirmation wins the transition; every other
+    caller sees an unchanged row and loses. Returns True only when this call
+    performed the transition.
+
+    ``frappe.db.set_value`` cannot be used for the claim signal: it always
+    returns ``None`` on every supported Frappe 15 backend, so its return
+    value cannot tell us whether the row actually changed. The raw cursor's
+    ``rowcount`` is the reliable, driver-independent signal for that.
+    """
+    frappe.db.sql(
+        "UPDATE `tabAI Assistant Action` SET `status` = 'processing' "
+        "WHERE `name` = %s AND `status` = 'pending'",
+        action_id,
+    )
+    return bool(getattr(frappe.db._cursor, "rowcount", 0))
 
 
 def confirm_draft(session, user=None, expected_nonce=None, action_id=None):
     """Confirm (create) a pending operation using the AI Assistant Action store.
 
-    Reads inputs from the AI Assistant Action DocType, creates the document via
-    create_document_from_draft(), then marks the action as 'completed' and writes
-    a [DOC_CREATED] marker for backward compat with the submit path.
+    The caller should identify the exact pending action by ``action_id`` for
+    non-interactive flows. In a chat flow the caller may omit it; the action is
+    then resolved to the single pending action owned by ``user`` in ``session``
+    (exactly one can exist because ``create_draft`` clears any earlier pending
+    action for the same session+user).
+
+    Confirmation is bound to the action owner, session, nonce, expiry, status,
+    and the preview hash that was stored when the draft was created.
+
+    On success the action is atomically moved through a transient ``processing``
+    state to ``completed``. On execution failure the action is moved to ``failed``
+    with a recorded reason, so failed attempts are not treated as completed.
     """
     user = user or frappe.session.user
-    action = _get_action(session=session, user=user, status="pending")
-    if not action:
-        return {"error": "No pending draft found for this session"}
 
-    action = frappe.get_doc("AI Assistant Action", action)
-    if not action or action.status != "pending":
+    if not action_id:
+        action_id = _get_action(session=session, user=user, status="pending")
+        if not action_id:
+            return {"error": "Nothing to confirm. Start by telling me what you want to create."}
+
+    action = _get_action(action_id=action_id)
+    if not action:
+        return {"error": "No such action"}
+
+    if action.user != user:
+        return {"error": "This action belongs to a different user"}
+
+    if action.session_id != str(session):
+        return {"error": "Session mismatch for this action"}
+
+    if action.status != "pending":
         return {"error": "The pending action is no longer available"}
 
-    # Expiry check
     expires_on = action.expires_on
     if isinstance(expires_on, str):
         expires_on = frappe.parse_datetime(expires_on)
     if expires_on and expires_on < frappe.utils.now_datetime():
         return {"error": "This draft has expired. Please start over."}
 
-    # Nonce check: prevents reusing an old confirmation link / guessed id.
     if expected_nonce and action.nonce != expected_nonce:
         return {"error": "Confirmation token mismatch. Please use the latest confirmation link."}
 
     try:
+        stored_preview_hash = getattr(action, "preview_hash", None)
+        stored_preview_hash = (
+            stored_preview_hash.get("preview_hash")
+            if isinstance(stored_preview_hash, dict)
+            else stored_preview_hash
+        )
         draft_data = json.loads(action.draft_data) if action.draft_data else {}
     except (ValueError, TypeError):
         return {"error": "Draft data is corrupted"}
@@ -382,34 +382,159 @@ def confirm_draft(session, user=None, expected_nonce=None, action_id=None):
     if not target_doctype:
         return {"error": "Draft does not specify a target DocType"}
 
-    # Create the document via the existing creator.
-    mcp = FrappeMCP()
-    result = create_document_from_draft(target_doctype, draft_data, mcp)
+    current_hash = generate_preview_hash(target_doctype, draft_data)
+    if stored_preview_hash and current_hash != stored_preview_hash:
+        return {"error": "The draft has changed since it was previewed. Please preview again."}
 
-    # Mark action as completed regardless of outcome, so it isn't reused.
+    # Atomically claim the action so concurrent confirmations cannot both execute.
+    claimed = _claim_action(action_id)
+    if not claimed:
+        return {"error": "Action expired or could not be claimed"}
+
     try:
-        action.status = "completed"
-        action.confirmed_at = frappe.utils.now()
-        action.target_docname = result.get("name") if isinstance(result, dict) and result.get("name") else None
-        action.save()
+        mcp = FrappeMCP()
+        result = create_document_from_draft(target_doctype, draft_data, mcp)
+
+        if isinstance(result, dict) and result.get("error"):
+            _finalise_action(
+                action_id,
+                status="failed",
+                target_docname=None,
+                failure_reason=result.get("error") or "create_document returned an error",
+                result_payload=result,
+            )
+            return result
+
+        _finalise_action(
+            action_id,
+            status="completed",
+            target_docname=(
+                result.get("name")
+                if isinstance(result, dict) and result.get("name")
+                else None
+            ),
+            failure_reason=None,
+            confirmed_at=frappe.utils.now(),
+            result_payload=result if isinstance(result, dict) else {},
+        )
+
+        _write_doc_created_marker(
+            user=user,
+            session=session,
+            target_doctype=target_doctype,
+            doc_name=(
+                result.get("name")
+                if isinstance(result, dict) and result.get("name")
+                else None
+            ),
+        )
+
+        return result
+    except Exception as exc:
+        _finalise_action(
+            action_id,
+            status="failed",
+            target_docname=None,
+            failure_reason=str(exc),
+            result_payload={"error": str(exc)},
+        )
+        frappe.log_error("erp_ai: confirm_draft failed for %s: %s" % (action_id, exc))
+        return {"error": "Confirmation failed. Please try again."}
+
+
+def _finalise_action(
+    action_id,
+    status,
+    target_docname=None,
+    failure_reason=None,
+    confirmed_at=None,
+    result_payload=None,
+    rollback_ref=None,
+    changed_fields=None,
+):
+    """Persist the final action state used by confirmation and audit.
+
+    Delegates to the audit module so the trail holds the complete outcome
+    (result payload, changed fields, rollback reference) in one consistent format.
+    This is the single audit-boundary commit for the action lifecycle.
+
+    A ``rollback_reference`` is always persisted: if the caller supplied one it is
+    used verbatim; otherwise a stable reference is synthesized from the action
+    record so operators can always navigate from a completed/failed action back to
+    the originating session/request, even when the caller did not manage its own
+    audit record.
+    """
+    import frappe
+
+    from erp_ai import audit
+
+    if status == "failed":
+        if not rollback_ref:
+            rollback_ref = {
+                "target_docname": target_docname,
+                "result_summary": {
+                    "status": "failed",
+                    "error": failure_reason or "unknown",
+                    "confirmed_at": str(confirmed_at) if confirmed_at else None,
+                },
+            }
+        audit.record_failure(
+            action_id,
+            failure_reason or "unknown",
+            rollback_ref=rollback_ref,
+        )
+        return
+
+    # Compute changed_fields if caller didn't supply them
+    if not changed_fields and result_payload and isinstance(result_payload, dict):
+        try:
+            stored = json.loads(frappe.db.get_value("AI Assistant Action", action_id, "draft_data") or "{}")
+        except (ValueError, TypeError):
+            stored = {}
+        previous = (stored.get("proposed_changes") or {}).keys()
+        skip_keys = {"name", "doctype", "print_url", "stock_entry"}
+        changed_fields = sorted(
+            set(previous) & {k for k in result_payload.keys() if k not in skip_keys}
+        )
+
+    if not rollback_ref:
+        rollback_ref = {
+            "target_docname": target_docname,
+            "result_summary": {
+                k: v for k, v in (result_payload or {}).items()
+                if k in ("name", "doctype", "status", "steps", "message", "error")
+            },
+        }
+
+    audit.record_completion(
+        action_id,
+        target_docname=target_docname,
+        result=result_payload or {},
+        rollback_ref=rollback_ref,
+        changed_fields=changed_fields,
+    )
+
+
+def _write_doc_created_marker(user, session, target_doctype, doc_name):
+    """Write a backward-compat marker so the existing submit path can still find it."""
+    try:
+        content = "[DOC_CREATED]" if not doc_name else "%s|%s|%s" % (
+            target_doctype,
+            doc_name,
+            "[DOC_CREATED]",
+        )
+        frappe.get_doc(
+            {
+                "doctype": "AI Chat Message",
+                "user": user,
+                "session_id": session,
+                "role": "assistant",
+                "content": content,
+            }
+        ).insert()
+        # Committed with the action finalisation above — not a separate boundary.
     except Exception:
         pass
-    frappe.db.commit()
-
-    # Write backward-compat marker so the existing submit path can still find it.
-    try:
-        frappe.get_doc({
-            "doctype": "AI Chat Message",
-            "user": user,
-            "session_id": session,
-            "role": "assistant",
-            "content": f"[DOC_CREATED]|{target_doctype}|{result.get('name')}" if isinstance(result, dict) else "[DOC_CREATED]",
-        }).insert(ignore_permissions=True)
-        frappe.db.commit()
-    except Exception:
-        pass
-
-    return result
 
 
 # =============================================================================
@@ -419,7 +544,6 @@ def confirm_draft(session, user=None, expected_nonce=None, action_id=None):
 def extract_item_fields(prompt):
     """Extract item fields from natural language with UOM support."""
     p = prompt
-    pl = p.lower()
     data = {}
 
     # Item name - extract words after "item" until price/stock/group or number+unit
@@ -592,13 +716,34 @@ def extract_party_fields(prompt, party_type="customer"):
 # MISSING FIELDS CHECK
 # =============================================================================
 
+
+def safe_parse_json(payload, label="payload"):
+    """Parse JSON safely without crashing the workflow on bad model output."""
+    if not payload:
+        return None
+    if isinstance(payload, (dict, list)):
+        return payload
+    if isinstance(payload, str):
+        try:
+            return json.loads(payload)
+        except ValueError as exc:
+            frappe.log_error("erp_ai: invalid %s: %s" % (label, exc))
+            return None
+    return None
+
+
 def get_missing_fields(doctype, data):
-    """Check which required fields are missing."""
+    """Check which required fields are still missing/empty.
+
+    A field is treated as missing when it is absent, empty, or an empty
+    collection for fields that must contain at least one entry.
+    """
     schema = DOCTYPE_SCHEMAS.get(doctype)
     if not schema:
         return []
     missing = []
-    for field in schema["required"]:
+    required = schema.get("required", [])
+    for field in required:
         val = data.get(field)
         if val is None or val == "" or (field == "items" and not val):
             missing.append(field)
@@ -618,6 +763,32 @@ def get_missing_labels(doctype, missing_fields):
 # PREVIEW GENERATOR
 # =============================================================================
 
+
+def generate_preview_hash(doctype, draft_data):
+    """Stable hash for the proposed action preview.
+
+    This is used to detect drift between the preview shown to the user and
+    the data actually confirmed. Only the fields that matter for execution
+    should influence the hash.
+    """
+    relevant = {}
+    schema = DOCTYPE_SCHEMAS.get(doctype, {})
+    for field in schema.get("required", []) + schema.get("optional", []):
+        val = draft_data.get(field)
+        if val is not None:
+            relevant[field] = val
+    payload = json.dumps(
+        {"doctype": doctype, "data": relevant},
+        sort_keys=True,
+        default=str,
+    )
+    # Deterministic hash required: frappe.generate_hash() ignores its txt
+    # argument and always returns a random token, which would make every
+    # preview hash unique and break the drift check between preview and
+    # confirmation.
+    return frappe.utils.sha256_hash(payload)[:16]
+
+
 def generate_preview(doctype, data):
     """Generate a human-readable preview."""
     schema = DOCTYPE_SCHEMAS.get(doctype, {})
@@ -626,78 +797,108 @@ def generate_preview(doctype, data):
 
     if doctype == "Item":
         lines.append("📦 New Item Preview:")
-        lines.append(f"  Name: {data.get('item_name', '-')}")
-        lines.append(f"  Group: {data.get('item_group', 'Products')}")
-        rate = data.get('standard_rate', 0)
+        lines.append("  Name: %s" % data.get("item_name", "-"))
+        lines.append("  Group: %s" % data.get("item_group", "Products"))
+        rate = data.get("standard_rate", 0)
         if isinstance(rate, float) and rate < 1:
-            lines.append(f"  Price: {rate:.4f}")
+            lines.append("  Price: %.4f" % rate)
         else:
-            lines.append(f"  Price: {rate:,.0f}")
-        lines.append(f"  UOM: {data.get('stock_uom', 'Nos')}")
+            lines.append("  Price: %s" % format(rate, ",.0f"))
+        lines.append("  UOM: %s" % data.get("stock_uom", "Nos"))
         if data.get("opening_stock"):
-            lines.append(f"  Opening Stock: {data['opening_stock']:,.0f}")
+            lines.append("  Opening Stock: %s" % format(data["opening_stock"], ",.0f"))
 
     elif doctype == "Sales Invoice":
         lines.append("🧾 Sales Invoice Preview:")
-        lines.append(f"  Customer: {data.get('customer', '-')}")
+        lines.append("  Customer: %s" % data.get("customer", "-"))
         lines.append("  Items:")
         for i, it in enumerate(data.get("items", []), 1):
             qty = it.get("qty", 1)
             rate = it.get("rate", 0)
             total = qty * rate
-            lines.append(f"    {i}. {it.get('description', it.get('item_code', '-'))} — {qty:g} × {rate:,.0f} = {total:,.0f}")
-        subtotal = sum(it.get("qty", 1) * it.get("rate", 0) for it in data.get("items", []))
-        lines.append(f"  Subtotal: {subtotal:,.0f}")
+            desc = it.get("description", it.get("item_code", "-"))
+            lines.append(
+                "    %d. %s — %g × %s = %s"
+                % (
+                    i,
+                    desc,
+                    qty,
+                    format(rate, ",.0f"),
+                    format(total, ",.0f"),
+                )
+            )
+        subtotal = sum(
+            it.get("qty", 1) * it.get("rate", 0) for it in data.get("items", [])
+        )
+        lines.append("  Subtotal: %s" % format(subtotal, ",.0f"))
         if data.get("discount_percent"):
-            disc = subtotal * data["discount_percent"] / 100
-            lines.append(f"  Discount ({data['discount_percent']}%): -{disc:,.0f}")
-            lines.append(f"  Total: {subtotal - disc:,.0f}")
+            disc = subtotal * data["discount_percent"] / 100.0
+            lines.append(
+                "  Discount (%s%%): -%s"
+                % (data["discount_percent"], format(disc, ",.0f"))
+            )
+            lines.append("  Total: %s" % format(subtotal - disc, ",.0f"))
         else:
-            lines.append(f"  Total: {subtotal:,.0f}")
+            lines.append("  Total: %s" % format(subtotal, ",.0f"))
 
     elif doctype == "Purchase Invoice":
         lines.append("📋 Purchase Invoice Preview:")
-        lines.append(f"  Supplier: {data.get('supplier', '-')}")
+        lines.append("  Supplier: %s" % data.get("supplier", "-"))
         lines.append("  Items:")
         for i, it in enumerate(data.get("items", []), 1):
             qty = it.get("qty", 1)
             rate = it.get("rate", 0)
             total = qty * rate
-            lines.append(f"    {i}. {it.get('description', it.get('item_code', '-'))} — {qty:g} × {rate:,.0f} = {total:,.0f}")
-        subtotal = sum(it.get("qty", 1) * it.get("rate", 0) for it in data.get("items", []))
-        lines.append(f"  Subtotal: {subtotal:,.0f}")
+            desc = it.get("description", it.get("item_code", "-"))
+            lines.append(
+                "    %d. %s — %g × %s = %s"
+                % (
+                    i,
+                    desc,
+                    qty,
+                    format(rate, ",.0f"),
+                    format(total, ",.0f"),
+                )
+            )
+        subtotal = sum(
+            it.get("qty", 1) * it.get("rate", 0) for it in data.get("items", [])
+        )
+        lines.append("  Subtotal: %s" % format(subtotal, ",.0f"))
         if data.get("discount_percent"):
-            disc = subtotal * data["discount_percent"] / 100
-            lines.append(f"  Discount ({data['discount_percent']}%): -{disc:,.0f}")
-            lines.append(f"  Total: {subtotal - disc:,.0f}")
+            disc = subtotal * data["discount_percent"] / 100.0
+            lines.append(
+                "  Discount (%s%%): -%s"
+                % (data["discount_percent"], format(disc, ",.0f"))
+            )
+            lines.append("  Total: %s" % format(subtotal - disc, ",.0f"))
         else:
-            lines.append(f"  Total: {subtotal:,.0f}")
+            lines.append("  Total: %s" % format(subtotal, ",.0f"))
 
     elif doctype == "Customer":
         lines.append("👤 New Customer Preview:")
-        lines.append(f"  Name: {data.get('customer_name', '-')}")
+        lines.append("  Name: %s" % data.get("customer_name", "-"))
         if data.get("mobile_no"):
-            lines.append(f"  Mobile: {data['mobile_no']}")
+            lines.append("  Mobile: %s" % data["mobile_no"])
         if data.get("email"):
-            lines.append(f"  Email: {data['email']}")
+            lines.append("  Email: %s" % data["email"])
         if data.get("customer_group"):
-            lines.append(f"  Group: {data['customer_group']}")
+            lines.append("  Group: %s" % data["customer_group"])
 
     elif doctype == "Supplier":
         lines.append("🏭 New Supplier Preview:")
-        lines.append(f"  Name: {data.get('supplier_name', '-')}")
+        lines.append("  Name: %s" % data.get("supplier_name", "-"))
         if data.get("mobile_no"):
-            lines.append(f"  Mobile: {data['mobile_no']}")
+            lines.append("  Mobile: %s" % data["mobile_no"])
         if data.get("email"):
-            lines.append(f"  Email: {data['email']}")
+            lines.append("  Email: %s" % data["email"])
         if data.get("supplier_group"):
-            lines.append(f"  Group: {data['supplier_group']}")
+            lines.append("  Group: %s" % data["supplier_group"])
 
     else:
-        lines.append(f"📄 {doctype} Preview:")
+        lines.append("📄 %s Preview:" % doctype)
         for k, v in data.items():
             label = labels.get(k, k.replace("_", " ").title())
-            lines.append(f"  {label}: {v}")
+            lines.append("  %s: %s" % (label, v))
 
     return "\n".join(lines)
 
@@ -720,6 +921,10 @@ INTENT_MAP = {
     "purchase receipt banao": "Purchase Receipt", "purcahse receipt banaiye": "Purchase Receipt",
     "create purchase invoice": "Purchase Invoice", "add purchase invoice": "Purchase Invoice",
     "purchase invoice banao": "Purchase Invoice", "purchase invoice banaiye": "Purchase Invoice",
+    "make purchase invoice": "Purchase Invoice", "make a purchase invoice": "Purchase Invoice",
+    "create a purchase invoice": "Purchase Invoice", "add a purchase invoice": "Purchase Invoice",
+    "make sales invoice": "Sales Invoice", "make a sales invoice": "Sales Invoice",
+    "create a sales invoice": "Sales Invoice", "add a sales invoice": "Sales Invoice",
     "create customer": "Customer", "add customer": "Customer", "customer banao": "Customer",
     "customer banaiye": "Customer", "new customer": "Customer",
     "create supplier": "Supplier", "add supplier": "Supplier", "supplier banao": "Supplier",
@@ -739,6 +944,8 @@ def detect_intent(prompt):
     if re.search(r'\b(add|create|banao|banaiye)\b.*\b(item|product|itm)\b', pl):
         return "Item"
     if re.search(r'\b(add|create|banao|banaiye|make)\b.*\b(invoice|bill)\b', pl):
+        if re.search(r'\b(purchase|supplier|vendor|buy)\b', pl):
+            return "Purchase Invoice"
         return "Sales Invoice"
     if re.search(r'\b(add|create|banao|banaiye)\b.*\b(customer|client)\b', pl):
         return "Customer"
@@ -871,9 +1078,12 @@ def clarification_needed(intent, data, missing_fields):
 # =============================================================================
 
 def create_document_from_draft(doctype, data, mcp):
-    """Create an ERP document from a draft. Commits once at the end so that
-    multi-step workflows (e.g. item + opening stock) are atomic from the
-    caller's perspective. Returns the create_document result dict."""
+    """Create an ERP document from a draft.
+
+    Does NOT commit: the caller's transaction boundary (confirm_draft) is the
+    single commit point so multi-step workflows are atomic from the caller's
+    perspective. Returns the create_document result dict.
+    """
     schema = DOCTYPE_SCHEMAS.get(doctype, {})
     defaults = schema.get("defaults", {})
     for k, v in defaults.items():
@@ -891,9 +1101,43 @@ def create_document_from_draft(doctype, data, mcp):
         result = _create_supplier_doc(data, mcp)
     elif doctype == "Payment Entry":
         result = _create_payment_entry_doc(data, mcp)
+    elif doctype in DOCTYPE_SCHEMAS:
+        # Generic, schema-driven creation covers every registry doctype
+        # (BOM, Work Order, Job Card, Quality Inspection, Asset*, Employee,
+        # Project, Task, RFQ, ...). Field names are verified against live
+        # metadata by the integration tests.
+        result = _create_generic_doc(doctype, data, mcp)
     else:
         return {"error": f"Unsupported doctype: {doctype}"}
-    frappe.db.commit()
+    return result
+
+
+def _create_generic_doc(doctype, data, mcp):
+    """Create any registry doctype from its schema: map known fields, apply
+    child tables, and hand off to the permission-checked MCP create tool."""
+    schema = DOCTYPE_SCHEMAS.get(doctype, {})
+    allowed = set(schema.get("required", []) + schema.get("optional", []))
+    doc_data = {"doctype": doctype}
+    for key in allowed:
+        val = data.get(key)
+        if val not in (None, ""):
+            doc_data[key] = val
+    child = schema.get("child_table")
+    if child:
+        rows = data.get(child["fieldname"])
+        if isinstance(rows, list) and rows:
+            allowed_child = set(child.get("required", []) + child.get("optional", []))
+            doc_data[child["fieldname"]] = [
+                {k: v for k, v in row.items() if k in allowed_child and v not in (None, "")}
+                for row in rows
+            ]
+    result = mcp.call_tool("create_document", {"doctype": doctype, "data": doc_data})
+    if isinstance(result, dict) and not result.get("error") and result.get("name"):
+        result["print_url"] = (
+            "/api/method/frappe.utils.print_format.download_pdf"
+            "?doctype=%s&name=%s&format=Standard"
+            % (frappe.utils.quote(doctype), frappe.utils.quote(result["name"]))
+        )
     return result
 
 
@@ -909,7 +1153,7 @@ def _create_item_doc(data, mcp):
     uom = data.get("stock_uom", "Nos")
     if not frappe.db.exists("Item Group", ig):
         try:
-            frappe.get_doc({"doctype": "Item Group", "item_group_name": ig}).insert(ignore_permissions=True)
+            frappe.get_doc({"doctype": "Item Group", "item_group_name": ig}).insert()
         except Exception:
             pass
     doc_data = {"doctype": "Item", "item_code": code, "item_name": item_name, "item_group": ig, "stock_uom": uom, "is_stock_item": 1, "standard_rate": data.get("standard_rate", 0)}
@@ -981,11 +1225,55 @@ def _create_purchase_invoice_doc(data, mcp):
     return result
 
 
+def _resolve_customer_group(preferred=None):
+    """Return a valid non-group Customer Group (ERPNext rejects group nodes)."""
+    if preferred and frappe.db.get_value("Customer Group", preferred, "is_group") == 0:
+        return preferred
+    try:
+        default = frappe.db.get_single_value("Selling Settings", "customer_group")
+    except Exception:
+        default = None
+    if default and frappe.db.get_value("Customer Group", default, "is_group") == 0:
+        return default
+    return frappe.db.get_value("Customer Group", {"is_group": 0}, "name", order_by="lft asc")
+
+
+def _resolve_territory(preferred=None):
+    """Return a valid non-group Territory."""
+    if preferred and frappe.db.get_value("Territory", preferred, "is_group") == 0:
+        return preferred
+    try:
+        default = frappe.db.get_single_value("Selling Settings", "territory")
+    except Exception:
+        default = None
+    if default and frappe.db.get_value("Territory", default, "is_group") == 0:
+        return default
+    return frappe.db.get_value("Territory", {"is_group": 0}, "name", order_by="lft asc")
+
+
+def _resolve_supplier_group(preferred=None):
+    """Return a valid non-group Supplier Group."""
+    if preferred and frappe.db.get_value("Supplier Group", preferred, "is_group") == 0:
+        return preferred
+    try:
+        default = frappe.db.get_single_value("Buying Settings", "supplier_group")
+    except Exception:
+        default = None
+    if default and frappe.db.get_value("Supplier Group", default, "is_group") == 0:
+        return default
+    return frappe.db.get_value("Supplier Group", {"is_group": 0}, "name", order_by="lft asc")
+
+
 def _create_customer_doc(data, mcp):
     name = data.get("customer_name", "").strip()
     if not name:
         return {"error": "customer_name required"}
-    doc_data = {"doctype": "Customer", "customer_name": name, "customer_group": data.get("customer_group", "All Customer Groups"), "territory": data.get("territory", "All Territories")}
+    doc_data = {
+        "doctype": "Customer",
+        "customer_name": name,
+        "customer_group": _resolve_customer_group(data.get("customer_group")) or "All Customer Groups",
+        "territory": _resolve_territory(data.get("territory")) or "All Territories",
+    }
     if data.get("mobile_no"):
         doc_data["mobile_no"] = data["mobile_no"]
     if data.get("email"):
@@ -998,7 +1286,11 @@ def _create_supplier_doc(data, mcp):
     name = data.get("supplier_name", "").strip()
     if not name:
         return {"error": "supplier_name required"}
-    doc_data = {"doctype": "Supplier", "supplier_name": name, "supplier_group": data.get("supplier_group", "All Supplier Groups")}
+    doc_data = {
+        "doctype": "Supplier",
+        "supplier_name": name,
+        "supplier_group": _resolve_supplier_group(data.get("supplier_group")) or "All Supplier Groups",
+    }
     if data.get("mobile_no"):
         doc_data["mobile_no"] = data["mobile_no"]
     if data.get("email"):
@@ -1016,4 +1308,4 @@ def _create_payment_entry_doc(data, mcp):
     if data.get("reference_no"):
         doc_data["reference_no"] = data["reference_no"]
     result = mcp.call_tool("create_document", {"doctype": "Payment Entry", "data": doc_data})
-    return result 
+    return result

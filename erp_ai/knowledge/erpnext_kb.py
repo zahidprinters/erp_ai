@@ -111,7 +111,7 @@ STOCK ENTRY PURPOSES:
 
 REQUIRED fields in Stock Entry: purpose, company, items[] with:
 - item_code, qty
-- s_warehouse (source, for Transfer/Issue) 
+- s_warehouse (source, for Transfer/Issue)
 - t_warehouse (target, for Receipt/Transfer/Manufacture)
 - basic_rate (valuation)
 

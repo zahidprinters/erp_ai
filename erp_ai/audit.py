@@ -1,0 +1,171 @@
+# ---------------------------------------------------------------------------
+# AI Audit Trail — complete record of every AI operation.
+#
+# Stores: user request, interpreted intent, records read, proposed changes,
+# confirmation status, executing user, result, errors, and rollback info.
+# Uses the AI Assistant Action DocType for persistence.
+# ---------------------------------------------------------------------------
+import hashlib
+import json
+from typing import Any, Dict, Optional
+
+
+def _compute_preview_hash(data: Dict[str, Any]) -> str:
+    """Compute a stable hash of proposed changes for integrity verification."""
+    canonical = json.dumps(data, sort_keys=True, default=str)
+    return hashlib.sha256(canonical.encode()).hexdigest()[:16]
+
+
+def create_audit_record(session: str, user: str, action: str, target_doctype: str,
+                       intent: str, request_text: str, proposed_data: Dict[str, Any],
+                       records_read: Optional[list] = None) -> Dict[str, Any]:
+    """Create a pending AI Assistant Action record for audit."""
+    import frappe
+    from frappe.utils import now_datetime
+    preview_hash = _compute_preview_hash(proposed_data)
+    nonce = frappe.generate_hash(length=12)
+    expires_on = frappe.utils.add_to_date(now_datetime(), minutes=30)
+    doc = frappe.get_doc({
+        "doctype": "AI Assistant Action",
+        "user": user,
+        "session_id": session,
+        "action": action,
+        "target_doctype": target_doctype,
+        "status": "pending",
+        "draft_data": json.dumps({
+            "intent": intent,
+            "request": request_text[:500],
+            "proposed_changes": proposed_data,
+            "records_read": records_read or [],
+        }),
+        "nonce": nonce,
+        "expires_on": expires_on,
+        "preview_hash": preview_hash,
+    })
+    doc.insert()
+    return {
+        "name": doc.name,
+        "nonce": nonce,
+        "preview_hash": preview_hash,
+        "expires_on": str(expires_on),
+    }
+
+
+def record_confirmation(action_id: str, user: str, expected_nonce: str = None) -> Dict[str, Any]:
+    """Mark an action as confirmed by the user.
+
+    Validates: ownership, nonce, expiry, status, and preview hash.
+    Returns {"ok": True} or {"ok": False, "error": "..."}.
+    """
+    import frappe
+    from frappe.utils import now_datetime
+    action = frappe.get_doc("AI Assistant Action", action_id)
+    # Validate ownership
+    if action.user != user:
+        return {"ok": False, "error": "Not your action"}
+    # Validate nonce if provided
+    if expected_nonce and action.nonce != expected_nonce:
+        return {"ok": False, "error": "Invalid nonce"}
+    # Validate expiry (use DB value directly, don't commit here — let the caller's
+    # transaction boundary handle persistence; this is validation only)
+    if action.expires_on and action.expires_on < now_datetime():
+        return {"ok": False, "error": "Action expired"}
+    # Validate status
+    if action.status != "pending":
+        return {"ok": False, "error": "Action already %s" % action.status}
+    # Record confirmation via a single save (caller's transaction handles commit)
+    action.status = "processing"
+    action.confirmed_at = now_datetime()
+    action.save()
+    return {"ok": True}
+
+
+def record_completion(
+    action_id: str,
+    target_docname: str,
+    result: Dict[str, Any],
+    rollback_ref: Optional[Dict[str, Any]] = None,
+    changed_fields: Optional[list] = None,
+) -> None:
+    """Mark an action as completed with the full result payload.
+
+    Stores the actual outcome (not just the target docname), a rollback reference
+    pointing back to the originating session/request, and the list of fields that
+    were actually changed so the audit trail is complete.
+    """
+    import frappe
+    from frappe.utils import now_datetime
+
+    action = frappe.get_doc("AI Assistant Action", action_id)
+    action.status = "completed"
+    action.target_docname = target_docname
+    action.completed_at = now_datetime()
+    if rollback_ref:
+        action.rollback_reference = frappe.as_json(rollback_ref)
+    action.draft_data = frappe.as_json({
+        "intent": (lambda d: d.get("intent") if isinstance(d, dict) else None)(
+            frappe.parse_json(action.draft_data) if action.draft_data else {}
+        ),
+        "request": (lambda d: d.get("request") if isinstance(d, dict) else None)(
+            frappe.parse_json(action.draft_data) if action.draft_data else {}
+        ),
+        "proposed_changes": (lambda d: d.get("proposed_changes") if isinstance(d, dict) else None)(
+            frappe.parse_json(action.draft_data) if action.draft_data else {}
+        ),
+        "records_read": (lambda d: d.get("records_read") if isinstance(d, dict) else None)(
+            frappe.parse_json(action.draft_data) if action.draft_data else {}
+        ),
+        "result": result,
+        "completed_at": str(now_datetime()),
+        "changed_fields": list(changed_fields) if changed_fields else None,
+    })
+    action.save()
+
+
+def record_failure(action_id: str, error: str, rollback_ref: Optional[Dict[str, Any]] = None) -> None:
+    """Mark an action as failed with error reason and optional rollback reference."""
+    import frappe
+    from frappe.utils import now_datetime
+
+    action = frappe.get_doc("AI Assistant Action", action_id)
+    action.status = "failed"
+    action.failure_reason = error[:500]
+    action.failed_at = now_datetime()
+    if rollback_ref:
+        action.rollback_reference = frappe.as_json(rollback_ref)
+    action.draft_data = frappe.as_json({
+        "intent": (lambda d: d.get("intent") if isinstance(d, dict) else None)(
+            frappe.parse_json(action.draft_data) if action.draft_data else {}
+        ),
+        "request": (lambda d: d.get("request") if isinstance(d, dict) else None)(
+            frappe.parse_json(action.draft_data) if action.draft_data else {}
+        ),
+        "proposed_changes": (lambda d: d.get("proposed_changes") if isinstance(d, dict) else None)(
+            frappe.parse_json(action.draft_data) if action.draft_data else {}
+        ),
+        "records_read": (lambda d: d.get("records_read") if isinstance(d, dict) else None)(
+            frappe.parse_json(action.draft_data) if action.draft_data else {}
+        ),
+        "error": error[:500],
+        "failed_at": str(now_datetime()),
+    })
+    action.save()
+
+
+def verify_preview_integrity(action_id: str, proposed_data: Dict[str, Any]) -> bool:
+    """Verify the proposed data hasn't changed since the preview was shown."""
+    import frappe
+    stored_hash = frappe.db.get_value("AI Assistant Action", action_id, "preview_hash")
+    return stored_hash == _compute_preview_hash(proposed_data)
+
+
+def get_audit_trail(session: str, user: str) -> list:
+    """Return all audit records for a session."""
+    import frappe
+    records = frappe.get_all("AI Assistant Action",
+        filters={"session_id": session, "user": user},
+        fields=["name", "action", "target_doctype", "status", "confirmed_at",
+                "target_docname", "failure_reason", "creation"],
+        order_by="creation desc",
+        limit_page_length=50)
+    return records

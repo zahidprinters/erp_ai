@@ -51,6 +51,22 @@ ignore = [
     "F405", # can't detect undefined names from * import
     "F722", # syntax error in forward type annotation
     "W191", # indentation contains tabs
+    # --- style-modernization rules intentionally not gated ---
+    # These would force a ~400-line no-behavior churn (printf->f-string,
+    # typing.Dict->dict annotations) across the whole app; revisit when the
+    # lint baseline is re-run with --unsafe-fixes on a feature branch.
+    "UP006", # use `dict` instead of `Dict` in type annotations
+    "UP010", # unnecessary futurology import
+    "UP015", # redundant open modes
+    "UP031", # printf-style string formatting
+    "UP032", # use f-string
+    "UP035", # deprecated typing imports
+    "UP045", # non-pep604 optional annotation
+    "RUF001", # ambiguous-unicode-character-string
+    "RUF005", # collection-literal-concatenation
+    "RUF010", # explicit f-string type conversion
+    "RUF013", # implicit-optional
+    "RUF059", # unused-unpacked-variable
 ]
 typing-modules = ["frappe.types.DF"]
 
