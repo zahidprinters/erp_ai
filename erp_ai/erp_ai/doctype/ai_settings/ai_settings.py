@@ -1,43 +1,23 @@
-from frappe.model.document import Document
 import frappe
+from frappe.model.document import Document
 
 
 class AISettings(Document):
-	pass
+	def validate(self):
+		"""Refuse to store a configuration the assistant cannot run with.
 
+		The LLM backend is site state, and a missing value used to surface
+		mid-chat as an unexplained auth or connection error. Enforcement belongs
+		at the settings boundary instead (audit point 14: missing runtime
+		configuration is a release blocker, not a silent degradation).
 
-@frappe.whitelist()
-def get_provider_models(provider=None):
-	"""Return available models for the given provider.
+		``get_provider_models`` / ``fetch_ollama_models`` lived here as two more
+		whitelisted copies of ``erp_ai.api.list_available_models`` (which the
+		settings form calls, and which is permission-gated); both had no callers
+		and have been deleted (audit points 5/11).
+		"""
+		from erp_ai.llm import validate_deployment_settings
 
-	Used by the AI Settings form to populate the model dropdown dynamically
-	when the user changes the LLM Provider select.
-
-	:param provider: The provider name (e.g. "Ollama (Local)", "OpenRouter")
-	:return: List of model strings for the dropdown options
-	"""
-	from erp_ai.llm import PROVIDER_MODELS
-
-	if not provider:
-		provider = frappe.db.get_single_value("AI Settings", "llm_provider") or "Ollama (Local)"
-
-	return PROVIDER_MODELS.get(provider, [])
-
-
-@frappe.whitelist()
-def fetch_ollama_models():
-	"""Fetch available models from a running Ollama instance.
-
-	Calls http://localhost:11434/api/tags and returns model names.
-	Used to dynamically populate the dropdown with actual local models.
-	"""
-	import requests
-	try:
-		resp = requests.get("http://localhost:11434/api/tags", timeout=5)
-		if resp.status_code == 200:
-			data = resp.json()
-			models = [m["name"] for m in data.get("models", [])]
-			return sorted(models)
-	except Exception:
-		pass
-	return []
+		problem = validate_deployment_settings(self)
+		if problem:
+			frappe.throw(problem, title="AI Settings")

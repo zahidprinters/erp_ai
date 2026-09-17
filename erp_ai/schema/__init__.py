@@ -9,19 +9,19 @@ from typing import Any, Dict, List, Optional
 DOCTYPE_SCHEMAS: Dict[str, Dict[str, Any]] = {
     "Item": {
         "required": ["item_name"],
-        "optional": ["item_group", "standard_rate", "stock_uom", "opening_stock", "item_code"],
+        "optional": ["item_group", "standard_rate", "stock_uom", "opening_stock", "item_code", "description", "valuation_rate", "is_stock_item"],
         "defaults": {"item_group": "Products", "stock_uom": "Nos", "standard_rate": 0, "is_stock_item": 1},
         "labels": {"item_name": "Item Name", "item_group": "Item Group", "standard_rate": "Price / Rate", "stock_uom": "Unit (UOM)", "opening_stock": "Opening Stock Qty", "item_code": "Item Code / SKU"},
     },
     "Customer": {
         "required": ["customer_name"],
-        "optional": ["customer_group", "territory", "mobile_no", "email"],
+        "optional": ["customer_group", "territory", "mobile_no", "email", "customer_type", "default_currency", "website"],
         "defaults": {"customer_group": "Commercial", "territory": "Pakistan"},
         "labels": {"customer_name": "Customer Name", "customer_group": "Customer Group", "territory": "Territory", "mobile_no": "Mobile Number", "email": "Email Address"},
     },
     "Supplier": {
         "required": ["supplier_name"],
-        "optional": ["supplier_group", "mobile_no", "email"],
+        "optional": ["supplier_group", "mobile_no", "email", "country", "default_currency", "website"],
         "defaults": {"supplier_group": "All Supplier Groups"},
         "labels": {"supplier_name": "Supplier Name", "supplier_group": "Supplier Group", "mobile_no": "Mobile Number", "email": "Email Address"},
     },
@@ -41,7 +41,7 @@ DOCTYPE_SCHEMAS: Dict[str, Dict[str, Any]] = {
     },
     "Sales Order": {
         "required": ["customer", "delivery_date", "items"],
-        "optional": ["company", "taxes_and_charges", "remarks"],
+        "optional": ["company", "taxes_and_charges", "remarks", "currency"],
         "defaults": {},
         "labels": {"customer": "Customer", "delivery_date": "Delivery Date", "items": "Items", "company": "Company", "taxes_and_charges": "Tax Template", "remarks": "Remarks"},
         "child_table": {"fieldname": "items", "required": ["item_code", "qty"], "optional": ["rate", "warehouse"], "labels": {"item_code": "Item", "qty": "Quantity", "rate": "Rate"}},
@@ -263,3 +263,35 @@ def get_label(doctype: str, field: str) -> str:
 def get_child_table(doctype: str) -> Optional[Dict[str, Any]]:
     s = DOCTYPE_SCHEMAS.get(doctype, {})
     return s.get("child_table")
+
+
+def resolve_warehouse(mcp, hint: Optional[str] = None) -> Optional[str]:
+    """Resolve a warehouse for a workflow: explicit hint, then site defaults.
+
+    Order: a hint that matches exactly one (or unambiguously one) Warehouse,
+    the user/company default warehouse, the Stock Settings default, and
+    finally the site's single leaf warehouse. Returns None when nothing
+    resolves — callers must then ask the operator instead of guessing.
+    """
+    import frappe
+
+    if hint:
+        found = mcp.call_tool("search_documents", {"query": hint, "doctype": "Warehouse", "limit": 5})
+        names = [r.get("name") for r in (found.get("results") or []) if r.get("name")]
+        if names:
+            if len(names) > 1:
+                needle = hint.lower().replace(" ", "-").replace("-", "")
+                exact = [n for n in names if needle in str(n).lower().replace("-", "")]
+                if len(exact) == 1:
+                    return exact[0]
+            return names[0]
+    default = (
+        frappe.defaults.get_user_default("warehouse")
+        or frappe.db.get_single_value("Stock Settings", "default_warehouse")
+    )
+    if default and frappe.db.exists("Warehouse", default):
+        return default
+    leaves = frappe.get_list("Warehouse", filters={"is_group": 0, "disabled": 0}, limit_page_length=2)
+    if len(leaves) == 1:
+        return leaves[0]["name"]
+    return None

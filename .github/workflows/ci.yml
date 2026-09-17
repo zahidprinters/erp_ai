@@ -43,6 +43,26 @@ jobs:
           print("All modules parse OK")
           EOF
 
+      - name: No build artifacts or caches tracked in git
+        run: |
+          python - <<'EOF'
+          import re, subprocess, sys
+
+          tracked = subprocess.check_output(["git", "ls-files"], text=True).splitlines()
+          pattern = re.compile(
+              r"(__pycache__|\.py[co]$|\.egg-info/|\.eggs/|\.pytest_cache/|\.ruff_cache/"
+              r"|\.mypy_cache/|\.tox/|\.nox/|node_modules/|\.bak$|\.orig$|\.rej$|\.tmp$"
+              r"|\.log$|\.sublime-|^\.cline/)"
+          )
+          bad = [p for p in tracked if pattern.search(p)]
+          if bad:
+              print("ARTIFACTS TRACKED IN GIT (audit point 13):")
+              for path in bad:
+                  print(" ", path)
+              sys.exit(1)
+          print("No artifacts tracked (%d files checked)" % len(tracked))
+          EOF
+
       - name: Database-free tests
         run: |
           python -m pytest erp_ai/tests/test_core.py erp_ai/tests/test_security.py \

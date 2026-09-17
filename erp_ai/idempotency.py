@@ -7,23 +7,34 @@
 # ---------------------------------------------------------------------------
 from typing import Any, Dict, Optional
 
+# Single expiry clock shared with erp_ai.draft_workflow (see erp_ai.audit).
+from erp_ai.audit import ACTION_EXPIRY_MINUTES, log_error_safely
 
-def _ensure_unique_index():
+
+def ensure_unique_index():
     """Create the unique index on AI Assistant Action.idempotency_key (idempotent).
+
+    Called from install/migrate hooks only — never from the request path. Running
+    DDL on a request takes metadata locks on a hot table and previously ran on
+    every claim that found no existing row, so it is a migration-time concern.
 
     The index is what makes concurrent claims race-safe: the second INSERT with
     the same key raises DuplicateEntryError instead of creating a second action.
     NULL keys (drafts without an idempotency key) are unaffected as MySQL treats
-    multiple NULLs as distinct.
+    multiple NULLs as distinct. Frappe's ``add_unique`` is a no-op when the
+    constraint already exists.
     """
     import frappe
     try:
         frappe.db.add_unique("AI Assistant Action", ["idempotency_key"],
                              constraint_name="unique_idempotency_key")
-    except Exception:
+    except Exception as exc:
         # Legacy rows with duplicate '' keys would block the index; check-then-insert
         # still applies as a best-effort guard in that case.
-        frappe.log_error("erp_ai.idempotency: could not create unique_idempotency_key index")
+        # Title first, message second (frappe.log_error swaps only when the first
+        # arg is multi-line); the Error Log title is capped at 140 chars, so the
+        # previously-long first argument raised from inside this except block.
+        log_error_safely("erp_ai.idempotency: unique index not created", str(exc))
 
 
 def check_idempotency(key: str, user: str = None) -> Optional[Dict[str, Any]]:
@@ -60,8 +71,9 @@ def claim_idempotency(key: str, session: str, user: str, action: str,
 
     Race-safe: the unique index on ``idempotency_key`` guarantees exactly one
     INSERT wins; a concurrent (or retried) claim raises DuplicateEntryError and
-    is reported as a duplicate. Returns {"status": "new", ...} or
-    {"status": "duplicate"/"forbidden", ...}.
+    is reported as a duplicate. The index is created by the install/migrate
+    hooks (``ensure_unique_index``), not on this request path. Returns
+    {"status": "new", ...} or {"status": "duplicate"/"forbidden", ...}.
     """
     import frappe
     if not key:
@@ -76,9 +88,8 @@ def claim_idempotency(key: str, session: str, user: str, action: str,
         if existing[0]["user"] != user:
             return {"status": "forbidden", "action_id": existing[0]["name"]}
         return {"status": "duplicate", "action_id": existing[0]["name"]}
-    _ensure_unique_index()
     nonce = frappe.generate_hash(length=12)
-    expires_on = frappe.utils.add_to_date(frappe.utils.now_datetime(), minutes=60)
+    expires_on = frappe.utils.add_to_date(frappe.utils.now_datetime(), minutes=ACTION_EXPIRY_MINUTES)
     doc = frappe.get_doc({
         "doctype": "AI Assistant Action",
         "user": user,

@@ -121,11 +121,11 @@ REQUIRES_SUPERVISOR: Dict[str, List[str]] = {
 # Each entry: role -> { "warehouses": [...], "companies": [...] }
 # None means no restriction (all accessible).
 DEPARTMENT_RESTRICTIONS: Dict[str, Optional[Dict[str, List[str]]]] = {
-    "Stock Manager": {"warehouses": ["Stores - SPI", "Work In Progress - SPI", "Finished Goods - SPI"], "companies": ["SPI"]},
-    "Stock User": {"warehouses": ["Stores - SPI"], "companies": ["SPI"]},
-    "Manufacturing User": {"warehouses": ["Work In Progress - SPI", "Stores - SPI"], "companies": ["SPI"]},
-    "Sales User": {"companies": ["SPI"]},
-    "Purchase User": {"companies": ["SPI"]},
+    "Stock Manager": {"warehouses": ["Stores - SPI", "Work In Progress - SPI", "Finished Goods - SPI"], "companies": ["Sheikh Plastic Industries"]},
+    "Stock User": {"warehouses": ["Stores - SPI"], "companies": ["Sheikh Plastic Industries"]},
+    "Manufacturing User": {"warehouses": ["Work In Progress - SPI", "Stores - SPI"], "companies": ["Sheikh Plastic Industries"]},
+    "Sales User": {"companies": ["Sheikh Plastic Industries"]},
+    "Purchase User": {"companies": ["Sheikh Plastic Industries"]},
 }
 
 # Permission hierarchy
@@ -253,6 +253,11 @@ def get_department_restrictions(user=None):
     """Return warehouse/company restrictions for a user."""
     import frappe
     user = user or frappe.session.user
+    if user == "Administrator":
+        # Frappe's god user bypasses every permission; the site's
+        # Administrator also carries every role, so without this exemption the
+        # restricted roles would bind the one user who must see everything.
+        return None
     roles = get_user_roles(user)
     warehouses = set()
     companies = set()
@@ -267,6 +272,94 @@ def get_department_restrictions(user=None):
     if not has_restriction:
         return None
     return {"warehouses": sorted(warehouses), "companies": sorted(companies)}
+
+
+_SCOPE_EMPTY = "__erp_ai_scope_empty__"
+
+
+def _intersect_scope(existing, allowed):
+    """Intersect a user-supplied filter value with the allowed scope.
+
+    Returns the values to keep. The result is always a subset of ``allowed``,
+    so an adversarial filter can widen nothing (audit point 19: the
+    restriction must hold even when the caller supplies their own
+    company/warehouse filter).
+    """
+    if existing is None:
+        return list(allowed)
+    if isinstance(existing, str):
+        return [existing] if existing in allowed else []
+    if isinstance(existing, (list, tuple)) and len(existing) == 2 \
+            and str(existing[0]).lower() in ("in", "=", "like"):
+        value = existing[1]
+        values = value if isinstance(value, (list, tuple)) else [value]
+        return [v for v in values if v in allowed]
+    # Unrecognized shape (e.g. a nested tuple list): fall back to the full
+    # allowed set — strictly narrower than the user asked, so no leak.
+    return list(allowed)
+
+
+def apply_department_filters(user, doctype, filters=None):
+    """Merge the user's department scope into query filters (audit point 19).
+
+    ``get_department_restrictions`` is policy; without this enforcement it was
+    advisory only — count/summary/list helpers returned totals for warehouses
+    and companies the user is not supposed to see. The allowed sets are ANDed
+    with whatever the caller supplied, and only for fields the DocType
+    actually has (Bin has ``warehouse``, Sales Invoice has ``company``).
+
+    Handles both filter shapes ``frappe.get_list`` accepts: dict and list of
+    ``[field, op, value]`` tuples.
+    """
+    import frappe
+    restrictions = get_department_restrictions(user)
+    if not restrictions:
+        return filters
+    allowed_companies = restrictions.get("companies") or []
+    allowed_warehouses = restrictions.get("warehouses") or []
+    if not allowed_companies and not allowed_warehouses:
+        return filters
+
+    meta = frappe.get_meta(doctype)
+    fields = {}
+    if allowed_companies and meta.has_field("company"):
+        fields["company"] = allowed_companies
+    if allowed_warehouses and meta.has_field("warehouse"):
+        fields["warehouse"] = allowed_warehouses
+    if not fields:
+        return filters
+
+    if isinstance(filters, dict):
+        filters = dict(filters)
+        for field, allowed in fields.items():
+            keep = _intersect_scope(filters.get(field), allowed)
+            filters[field] = ["in", keep] if keep else ["=", _SCOPE_EMPTY]
+        return filters
+
+    filters = list(filters) if filters else []
+    for field, allowed in fields.items():
+        # List form is pure AND semantics; appending can only narrow.
+        filters.append([field, "in", allowed])
+    return filters
+
+
+def record_outside_department_scope(user, doctype, doc) -> bool:
+    """True if a fetched document sits outside the user's department scope.
+
+    Complements ``apply_department_filters`` for by-name reads: a query can be
+    filtered, but ``frappe.get_doc(name)`` fetches any single row — the caller
+    must re-check the fetched document against the scope (audit point 19).
+    """
+    restrictions = get_department_restrictions(user)
+    if not restrictions:
+        return False
+    companies = restrictions.get("companies") or []
+    warehouses = restrictions.get("warehouses") or []
+    if doc.get("company") and companies and doc.get("company") not in companies:
+        return True
+    if doc.get("warehouse") and warehouses and doc.get("warehouse") not in warehouses:
+        return True
+    return False
 
 
 def check_amount_limit(user, amount):

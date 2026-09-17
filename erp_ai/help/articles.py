@@ -61,7 +61,11 @@ def get_articles(category=None, search=None, limit=50):
             ["content", "like", f"%{search}%"],
         ]
 
-    articles = frappe.get_all(
+    # ``frappe.get_list``, not ``get_all``: ``get_all`` forces ``ignore_permissions``
+    # (see erp_ai/erp_tools.py::_fetch, which must go through ``get_list`` for the
+    # same reason), so the help search handed out rows to users who cannot read the
+    # DocType and skipped the User Permission row filters.
+    articles = frappe.get_list(
         "AI Help Article",
         filters=filters,
         fields=["name", "title", "category", "icon", "description", "keywords", "modified"],
@@ -77,6 +81,12 @@ def get_articles(category=None, search=None, limit=50):
 def get_article(name):
     """Return a single help article by name."""
     article = frappe.get_doc("AI Help Article", name)
+    # ``frappe.get_doc`` applies no permission check of its own (Point 6 pattern),
+    # so without this any authenticated user could read any article — including
+    # inactive ones — by guessing or enumerating its name.
+    if not frappe.has_permission("AI Help Article", "read", doc=article):
+        raise frappe.PermissionError(
+            _("Not permitted to read help article {0}").format(name))
     return {
         "name": article.name,
         "title": article.title,
@@ -96,7 +106,12 @@ def search_articles(query):
     if not query or len(query) < 2:
         return []
 
-    articles = frappe.get_all(
+    # Bound the LIKE pattern: an unbounded term is a full-table scan, and a bare
+    # ``%`` would match every article.
+    query = str(query)[:100]
+
+    # ``get_list`` (permission-filtered) for the same reason as ``get_articles``.
+    articles = frappe.get_list(
         "AI Help Article",
         filters={"is_active": 1},
         fields=["name", "title", "category", "icon", "description"],

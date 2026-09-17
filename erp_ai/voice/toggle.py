@@ -10,12 +10,21 @@ import frappe
 def is_voice_enabled(user=None):
     """Return True if voice output is enabled for the user.
 
-    Checks (in order):
-    1. User-level preference (custom field on User)
-    2. System-level default (AI Settings or Global Defaults)
-    3. Default: False (voice off for safety/privacy)
+        Checks (in order):
+    1. Admin master toggle (AI Settings.speaker_enabled) — if off, voice is OFF for everyone
+    2. User-level preference (custom field on User)
+    3. System-level default (AI Settings.voice_enabled_by_default)
+    4. Default: False (voice off for safety/privacy)
     """
     user = user or frappe.session.user
+
+    # Admin master toggle — overrides everything
+    try:
+        master = frappe.db.get_single_value("AI Settings", "speaker_enabled")
+        if not master:
+            return False
+    except Exception:
+        pass
 
     # Check user preference
     try:

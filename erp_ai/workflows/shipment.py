@@ -10,7 +10,7 @@ from typing import Any, Dict
 def handle_shipment_nl(text: str, mcp) -> Dict[str, Any]:
     """Parse natural language shipment text and create receipt workflow."""
     supplier = None
-    m = re.search(r"(?:from|supplier|vendor)\s+([A-Za-z0-9 .&-]{2,40}?)(?:,|\.|vehicle|arriv|$)", text, re.I)
+    m = re.search(r"(?:from|supplier|vendor)\s+([A-Za-z0-9 .&-]{2,40}?)(?:\s+(?:at|in|to|vehicle|arriv)|,|\.|$)", text, re.I)
     if m:
         supplier = m.group(1).strip()
 
@@ -46,6 +46,18 @@ def handle_shipment_nl(text: str, mcp) -> Dict[str, Any]:
             "message": "I can record this shipment. Please provide:\n" + "\n".join("- " + x for x in missing),
         }
 
+    # Warehouse hint from the text ("... 100 bolts to Main Store"), resolved
+    # against live Warehouses; falls back to site defaults. When nothing
+    # resolves, create_shipment_receipt's metadata check will ask for it.
+    from erp_ai.schema import resolve_warehouse
+
+    warehouse = None
+    m = re.search(r"(?:to|into|in)\s+([A-Za-z0-9 -]{2,40}?)(?:\s+warehouse|\s+store)?(?=\s+(?:arriv|from|vehicle)|,|\.|$)", text, re.I)
+    if m:
+        warehouse = resolve_warehouse(mcp, m.group(1).strip())
+    if not warehouse:
+        warehouse = resolve_warehouse(mcp)
+
     for it in items:
         nm = it.get("item_name", "")
         found = mcp.call_tool("search_documents", {"query": nm, "doctype": "Item", "limit": 1})
@@ -55,7 +67,8 @@ def handle_shipment_nl(text: str, mcp) -> Dict[str, Any]:
         else:
             it["item_code"] = nm.replace(" ", "-").upper()
 
-        data = {"supplier": supplier, "vehicle_no": vehicle, "items": items, "remarks": text[:200]}
+    data = {"supplier": supplier, "vehicle_no": vehicle, "items": items,
+            "warehouse": warehouse, "remarks": text[:200]}
     # Return the parsed data so the caller can show a preview before execution
     return {"ok": True, "data": data, "message": "Shipment parsed. Review and confirm to create receipt."}
 
@@ -91,7 +104,11 @@ def create_shipment_receipt(data: Dict[str, Any], mcp) -> Dict[str, Any]:
     if not items:
         return {"ok": False, "error": "items required"}
 
-    warehouse = data.get("warehouse") or "Stores - SPI" if frappe.db.exists("Warehouse", "Stores - SPI") else (data.get("warehouse") or "Stores")
+    from erp_ai.schema import resolve_warehouse
+
+    warehouse = data.get("warehouse") or resolve_warehouse(mcp)
+    if not warehouse:
+        warehouse = "Stores - SPI" if frappe.db.exists("Warehouse", "Stores - SPI") else "Stores"
 
     # Validate items exist; create if missing
     for it in items:
@@ -108,14 +125,31 @@ def create_shipment_receipt(data: Dict[str, Any], mcp) -> Dict[str, Any]:
 
     remarks = " | ".join(filter(None, ["Vehicle: %s" % data.get("vehicle_no") if data.get("vehicle_no") else None, data.get("remarks", "")]))
 
+    company = frappe.defaults.get_global_default("company")
+    if not company:
+        return {"ok": False, "error": "No default company is configured — set one in Company or Global Defaults."}
+    currency = frappe.defaults.get_global_default("currency") or company
+    exchange_rate = 1.0
+
     # Prefer Purchase Receipt
     pr_data = {
         "doctype": "Purchase Receipt", "supplier": supplier,
-        "company": frappe.defaults.get_global_default("company"),
+        "company": company,
+        "currency": currency,
+        "price_list_currency": currency,
+        "exchange_rate": exchange_rate,
+        "conversion_rate": exchange_rate,
         "items": [{"item_code": it["item_code"], "qty": it.get("qty", 0),
                     "rate": it.get("rate", 0), "t_warehouse": warehouse} for it in items],
         "remarks": remarks,
     }
+    # Fail early on live-metadata mandatory fields (including Custom Fields and
+    # child-row requirements) with a clear, listable message.
+    from erp_ai.mcp.server import _validate_required_fields
+
+    missing_err = _validate_required_fields("Purchase Receipt", pr_data)
+    if missing_err:
+        return {"ok": False, "error": missing_err, "steps": steps}
     pr = mcp.call_tool("create_document", {"doctype": "Purchase Receipt", "data": pr_data})
     if "error" in pr:
         # Fallback to Stock Entry Material Receipt

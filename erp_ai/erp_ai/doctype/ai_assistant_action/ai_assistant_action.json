@@ -123,7 +123,7 @@
     },
     {
       "fieldname": "rollback_reference",
-      "fieldtype": "Data",
+      "fieldtype": "Long Text",
       "in_list_view": 1,
       "label": "Rollback Reference"
     },

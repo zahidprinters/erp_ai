@@ -13,12 +13,14 @@ through Document.insert()/save(), so the caller's own roles and User Permission
 row filters always apply - nothing here bypasses frappe.has_permission().
 """
 
-import frappe
 import json
 import re
-from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional
 
+import frappe
+
+from erp_ai.rbac import apply_department_filters
 
 # ---------------------------------------------------------------------------
 # Query validation (audit points 14-17). The model supplies `filters`, `fields`,
@@ -152,6 +154,12 @@ def _fetch(doctype: str, *args, **kwargs) -> List[Dict]:
     )
     if err:
         raise ValueError(f"Invalid query for {doctype}: {err}")
+    # Department scope enforcement (audit point 19): the app's warehouse/
+    # company restrictions are ANDed into every read here — the one path all
+    # list tools, counts, sums and API aggregates funnel through — so a
+    # restricted role can never aggregate rows outside their scope.
+    kwargs["filters"] = apply_department_filters(
+        frappe.session.user, doctype, kwargs.get("filters"))
     try:
         return frappe.get_list(doctype, *args, **kwargs)
     except frappe.PermissionError:
@@ -210,7 +218,7 @@ def get_system_overview() -> Dict[str, Any]:
         "open_orders": {"sales": 0, "purchase": 0},
         "recent_transactions": []
     }
-    
+
         # Companies
     companies = _fetch(
         'Company',
@@ -229,7 +237,7 @@ def get_system_overview() -> Dict[str, Any]:
         }
         for c in companies
     ]
-    
+
     # Customers
     customers = _fetch(
         'Customer',
@@ -247,7 +255,7 @@ def get_system_overview() -> Dict[str, Any]:
         }
         for c in customers
     ]
-    
+
         # Suppliers
     suppliers = _fetch(
         'Supplier',
@@ -276,7 +284,7 @@ def get_system_overview() -> Dict[str, Any]:
         count = _count('Item', {'item_group': ig['name']})
         overview['items_summary'][ig['name']] = count
     overview['items_summary']['TOTAL'] = _count('Item')
-    
+
         # Warehouses
     warehouses = _fetch(
         'Warehouse',
@@ -292,7 +300,7 @@ def get_system_overview() -> Dict[str, Any]:
         }
         for w in warehouses
     ]
-    
+
     # Open orders count
     overview['open_orders']['sales'] = _count(
         'Sales Order',
@@ -302,7 +310,7 @@ def get_system_overview() -> Dict[str, Any]:
         'Purchase Order',
         {'status': ['in', ['Draft', 'On Hold', 'Pending']]}
     )
-    
+
     # Recent transactions (last 10)
     recent_sales = _fetch(
         'Sales Invoice',
@@ -316,7 +324,7 @@ def get_system_overview() -> Dict[str, Any]:
         order_by='posting_date desc',
         limit_page_length=5
     )
-    
+
     overview['recent_transactions'] = {
         'sales_invoices': [
             {
@@ -339,19 +347,19 @@ def get_system_overview() -> Dict[str, Any]:
             for inv in recent_purchases
         ]
     }
-    
+
     return overview
 
 
 def get_items(filters: Optional[Dict] = None, limit: int = 50, fields: Optional[List] = None) -> List[Dict]:
     """
     Get items from ERP with optional filters.
-    
+
     Args:
         filters: Dict of filters (e.g., {'item_group': 'Products', 'is_stock_item': 1})
         limit: Max number of items to return (default 50)
         fields: List of fields to return (default: common fields)
-    
+
     Returns:
         List of item dictionaries
     """
@@ -360,20 +368,20 @@ def get_items(filters: Optional[Dict] = None, limit: int = 50, fields: Optional[
             'item_code', 'item_name', 'item_group', 'description',
             'stock_uom', 'is_stock_item', 'valuation_rate', 'standard_rate'
         ]
-    
+
     item_filters = filters or {}
     items = _fetch('Item', filters=item_filters, fields=fields, limit_page_length=limit)
-    
+
     return items
 
 
 def get_item_details(item_code: str) -> Optional[Dict]:
     """
     Get detailed information about a specific item.
-    
+
     Args:
         item_code: The item code to look up
-    
+
     Returns:
         Full item document or None if not found
     """
@@ -390,11 +398,11 @@ def get_item_details(item_code: str) -> Optional[Dict]:
 def search_items(query: str, limit: int = 20) -> List[Dict]:
     """
     Search items by name, code, or description.
-    
+
     Args:
         query: Search term
         limit: Max results (default 20)
-    
+
     Returns:
         List of matching items
     """
@@ -418,11 +426,11 @@ def search_items(query: str, limit: int = 20) -> List[Dict]:
 def get_customers(filters: Optional[Dict] = None, limit: int = 50) -> List[Dict]:
     """
     Get customers from ERP.
-    
+
     Args:
         filters: Optional filters (e.g., {'customer_group': 'Spare Parts'})
         limit: Max customers to return
-    
+
     Returns:
         List of customer dictionaries
     """
@@ -430,20 +438,20 @@ def get_customers(filters: Optional[Dict] = None, limit: int = 50) -> List[Dict]
         'name', 'customer_name', 'customer_group', 'territory',
         'customer_type', 'default_currency', 'website', 'tax_id'
     ]
-    
+
     cust_filters = filters or {}
     customers = _fetch('Customer', filters=cust_filters, fields=fields, limit_page_length=limit)
-    
+
     return customers
 
 
 def get_customer_details(customer_code: str) -> Optional[Dict]:
     """
     Get detailed information about a specific customer.
-    
+
     Args:
         customer_code: Customer name or document name
-    
+
     Returns:
         Full customer document or None
     """
@@ -457,11 +465,11 @@ def get_customer_details(customer_code: str) -> Optional[Dict]:
 def get_suppliers(filters: Optional[Dict] = None, limit: int = 50) -> List[Dict]:
     """
     Get suppliers from ERP.
-    
+
     Args:
         filters: Optional filters
         limit: Max suppliers to return
-    
+
     Returns:
         List of supplier dictionaries
     """
@@ -469,20 +477,20 @@ def get_suppliers(filters: Optional[Dict] = None, limit: int = 50) -> List[Dict]
         'name', 'supplier_name', 'supplier_group',
         'country', 'website', 'tax_id'
     ]
-    
+
     supp_filters = filters or {}
     suppliers = _fetch('Supplier', filters=supp_filters, fields=fields, limit_page_length=limit)
-    
+
     return suppliers
 
 
 def get_supplier_details(supplier_code: str) -> Optional[Dict]:
     """
     Get detailed information about a specific supplier.
-    
+
     Args:
         supplier_code: Supplier name or document name
-    
+
     Returns:
         Full supplier document or None
     """
@@ -496,7 +504,7 @@ def get_supplier_details(supplier_code: str) -> Optional[Dict]:
 def get_companies() -> List[Dict]:
     """
     Get all companies in the ERP system.
-    
+
     Returns:
         List of company dictionaries with key details
     """
@@ -504,19 +512,19 @@ def get_companies() -> List[Dict]:
         'name', 'company_name', 'default_currency', 'country',
         'tax_id', 'website', 'email', 'phone_no'
     ]
-    
+
     companies = _fetch('Company', fields=fields, order_by='company_name')
-    
+
     return companies
 
 
 def get_company_details(company_name: str) -> Optional[Dict]:
     """
     Get detailed information about a specific company.
-    
+
     Args:
         company_name: Company document name
-    
+
     Returns:
         Full company document or None
     """
@@ -530,29 +538,29 @@ def get_company_details(company_name: str) -> Optional[Dict]:
 def get_warehouses(filters: Optional[Dict] = None) -> List[Dict]:
     """
     Get all warehouses or filter by group.
-    
+
     Args:
         filters: Optional filters (e.g., {'is_group': 1} or {'company': 'SPI Pharma'})
-    
+
     Returns:
         List of warehouse dictionaries
     """
     fields = ['name', 'warehouse_name', 'is_group', 'company', 'parent_warehouse']
-    
+
     wh_filters = filters or {}
     warehouses = _fetch('Warehouse', filters=wh_filters, fields=fields, order_by='warehouse_name')
-    
+
     return warehouses
 
 
 def get_stock_levels(item_code: str, warehouse: Optional[str] = None) -> List[Dict]:
     """
     Get current stock levels for an item.
-    
+
     Args:
         item_code: The item code to check
         warehouse: Optional specific warehouse (if None, checks all)
-    
+
     Returns:
         List of stock entries with actual quantities
     """
@@ -578,11 +586,11 @@ def get_stock_levels(item_code: str, warehouse: Optional[str] = None) -> List[Di
 def get_open_sales_orders(filters: Optional[Dict] = None, limit: int = 20) -> List[Dict]:
     """
     Get open sales orders.
-    
+
     Args:
         filters: Optional filters (e.g., {'customer': 'SPI Traders'})
         limit: Max orders to return
-    
+
     Returns:
         List of sales order dictionaries
     """
@@ -590,21 +598,21 @@ def get_open_sales_orders(filters: Optional[Dict] = None, limit: int = 20) -> Li
         'name', 'customer', 'customer_name', 'transaction_date', 'delivery_date',
         'status', 'grand_total', 'base_grand_total', 'terms'
     ]
-    
+
     so_filters = filters or {'status': ['in', ['Draft', 'Quotation', 'On Hold', 'Pending', 'Partially Delivered']]}
     orders = _fetch('Sales Order', filters=so_filters, fields=fields, limit_page_length=limit, order_by='transaction_date desc')
-    
+
     return orders
 
 
 def get_open_purchase_orders(filters: Optional[Dict] = None, limit: int = 20) -> List[Dict]:
     """
     Get open purchase orders.
-    
+
     Args:
         filters: Optional filters (e.g., {'supplier': 'SPIPHARMA'})
         limit: Max orders to return
-    
+
     Returns:
         List of purchase order dictionaries
     """
@@ -612,21 +620,21 @@ def get_open_purchase_orders(filters: Optional[Dict] = None, limit: int = 20) ->
         'name', 'supplier', 'supplier_name', 'transaction_date', 'schedule_date',
         'status', 'grand_total', 'base_grand_total', 'terms'
     ]
-    
+
     po_filters = filters or {'status': ['in', ['Draft', 'On Hold', 'Pending']]}
     orders = _fetch('Purchase Order', filters=po_filters, fields=fields, limit_page_length=limit, order_by='transaction_date desc')
-    
+
     return orders
 
 
 def get_sales_invoices(filters: Optional[Dict] = None, limit: int = 20) -> List[Dict]:
     """
     Get sales invoices.
-    
+
     Args:
         filters: Optional filters
         limit: Max invoices to return
-    
+
     Returns:
         List of sales invoice dictionaries
     """
@@ -635,21 +643,21 @@ def get_sales_invoices(filters: Optional[Dict] = None, limit: int = 20) -> List[
         'status', 'grand_total', 'base_grand_total', 'outstanding_amount',
         'paid_amount'
     ]
-    
+
     inv_filters = filters or {}
     invoices = _fetch('Sales Invoice', filters=inv_filters, fields=fields, limit_page_length=limit, order_by='posting_date desc')
-    
+
     return invoices
 
 
 def get_purchase_invoices(filters: Optional[Dict] = None, limit: int = 20) -> List[Dict]:
     """
     Get purchase invoices.
-    
+
     Args:
         filters: Optional filters
         limit: Max invoices to return
-    
+
     Returns:
         List of purchase invoice dictionaries
     """
@@ -658,21 +666,21 @@ def get_purchase_invoices(filters: Optional[Dict] = None, limit: int = 20) -> Li
         'status', 'grand_total', 'base_grand_total', 'outstanding_amount',
         'paid_amount'
     ]
-    
+
     inv_filters = filters or {}
     invoices = _fetch('Purchase Invoice', filters=inv_filters, fields=fields, limit_page_length=limit, order_by='posting_date desc')
-    
+
     return invoices
 
 
 def get_item_price(item_code: str, price_list: str = 'Standard Selling') -> Optional[Dict]:
     """
     Get price list entry for an item.
-    
+
     Args:
         item_code: The item code
         price_list: Price list name (default: Standard Selling)
-    
+
     Returns:
         Price list entry or None
     """
@@ -681,17 +689,17 @@ def get_item_price(item_code: str, price_list: str = 'Standard Selling') -> Opti
         {'item_code': item_code, 'price_list': price_list},
         ['price_list_rate', 'currency', 'valid_from'],
     )
-    
+
     return price_list_entry
 
 
 def get_low_stock_items(threshold: int = 10) -> List[Dict]:
     """
     Get items with stock below threshold.
-    
+
     Args:
         threshold: Minimum quantity to consider as "low stock"
-    
+
     Returns:
         List of items with low stock
     """
@@ -701,7 +709,7 @@ def get_low_stock_items(threshold: int = 10) -> List[Dict]:
         fields=['item_code', 'item_name', 'item_group', 'valuation_rate', 'opening_stock'],
         limit_page_length=100
     )
-    
+
     # Check actual stock from stock ledger
     low_stock = []
     for item in items:
@@ -710,7 +718,7 @@ def get_low_stock_items(threshold: int = 10) -> List[Dict]:
             {'item_code': item['item_code']},
             'actual_qty'
         ) or 0
-        
+
         if actual_stock < threshold:
             low_stock.append({
                 'item_code': item['item_code'],
@@ -719,22 +727,22 @@ def get_low_stock_items(threshold: int = 10) -> List[Dict]:
                 'actual_stock': actual_stock,
                 'valuation_rate': item['valuation_rate']
             })
-    
+
     return low_stock
 
 
 def get_transaction_summary(days: int = 30) -> Dict[str, Any]:
     """
     Get transaction summary for recent period.
-    
+
     Args:
         days: Number of days to look back (default 30)
-    
+
     Returns:
         Summary statistics
     """
     from_date = datetime.now() - timedelta(days=days)
-    
+
     summary = {
         'period': f'Last {days} days',
         'from_date': from_date.isoformat(),
@@ -757,7 +765,7 @@ def get_transaction_summary(days: int = 30) -> Dict[str, Any]:
             'total_amount': 0
         }
     }
-    
+
     # Sales invoices
     sales_invs = _fetch(
         'Sales Invoice',
@@ -767,7 +775,7 @@ def get_transaction_summary(days: int = 30) -> Dict[str, Any]:
     summary['sales_invoices']['count'] = len(sales_invs)
     summary['sales_invoices']['total_amount'] = sum(inv['grand_total'] or 0 for inv in sales_invs)
     summary['sales_invoices']['outstanding'] = sum(inv['outstanding_amount'] or 0 for inv in sales_invs)
-    
+
     # Purchase invoices
     purch_invs = _fetch(
         'Purchase Invoice',
@@ -777,7 +785,7 @@ def get_transaction_summary(days: int = 30) -> Dict[str, Any]:
     summary['purchase_invoices']['count'] = len(purch_invs)
     summary['purchase_invoices']['total_amount'] = sum(inv['grand_total'] or 0 for inv in purch_invs)
     summary['purchase_invoices']['outstanding'] = sum(inv['outstanding_amount'] or 0 for inv in purch_invs)
-    
+
     # Sales orders
     sales_orders = _fetch(
         'Sales Order',
@@ -786,7 +794,7 @@ def get_transaction_summary(days: int = 30) -> Dict[str, Any]:
     )
     summary['sales_orders']['count'] = len(sales_orders)
     summary['sales_orders']['total_amount'] = sum(so['grand_total'] or 0 for so in sales_orders)
-    
+
     # Purchase orders
     purch_orders = _fetch(
         'Purchase Order',
@@ -795,7 +803,7 @@ def get_transaction_summary(days: int = 30) -> Dict[str, Any]:
     )
     summary['purchase_orders']['count'] = len(purch_orders)
     summary['purchase_orders']['total_amount'] = sum(po['grand_total'] or 0 for po in purch_orders)
-    
+
     return summary
 
 
@@ -837,7 +845,7 @@ def create_sales_order(
 ) -> Optional[str]:
     """
     Create a new sales order.
-    
+
     Args:
         customer: Customer document name
         items: List of item dicts with {'item_code': str, 'qty': float, 'rate': float}
@@ -846,7 +854,7 @@ def create_sales_order(
         warehouse: Warehouse name (default: from item or first warehouse)
         currency: Currency (default: from customer)
         comments: Order notes (stored in the 'terms' field)
-    
+
     Returns:
         Sales Order name if successful, None otherwise
     """
@@ -935,7 +943,7 @@ def create_item(
 ) -> Optional[str]:
     """
     Create a new item.
-    
+
     Args:
         item_code: Unique item code
         item_name: Item name
@@ -947,7 +955,7 @@ def create_item(
         valuation_rate: Valuation rate
         opening_stock: Opening stock quantity
         default_warehouse: Default warehouse
-    
+
     Returns:
         Item code if successful, None otherwise
     """
@@ -982,7 +990,7 @@ def create_customer(
 ) -> Optional[str]:
     """
     Create a new customer.
-    
+
     Args:
         customer_name: Customer name
         customer_group: Customer group
@@ -992,7 +1000,7 @@ def create_customer(
         phone_no: Phone number
         email_id: Email address
         website: Website
-    
+
     Returns:
         Customer name if successful, None otherwise
     """
@@ -1031,7 +1039,7 @@ def create_supplier(
 ) -> Optional[str]:
     """
     Create a new supplier.
-    
+
     Args:
         supplier_name: Supplier name
         supplier_group: Supplier group
@@ -1040,7 +1048,7 @@ def create_supplier(
         phone_no: Phone number
         email_id: Email address
         website: Website
-    
+
     Returns:
         Supplier name if successful, None otherwise
     """
@@ -1070,41 +1078,41 @@ def create_supplier(
 ERP_TOOLS = {
     # System overview
     'get_system_overview': get_system_overview,
-    
+
     # Items
     'get_items': get_items,
     'get_item_details': get_item_details,
     'search_items': search_items,
     'get_item_price': get_item_price,
-    
+
     # Customers
     'get_customers': get_customers,
     'get_customer_details': get_customer_details,
-    
+
     # Suppliers
     'get_suppliers': get_suppliers,
     'get_supplier_details': get_supplier_details,
-    
+
     # Companies
     'get_companies': get_companies,
     'get_company_details': get_company_details,
-    
+
     # Warehouses & Stock
     'get_warehouses': get_warehouses,
     'get_stock_levels': get_stock_levels,
     'get_low_stock_items': get_low_stock_items,
-    
+
     # Orders
     'get_open_sales_orders': get_open_sales_orders,
     'get_open_purchase_orders': get_open_purchase_orders,
-    
+
     # Invoices
     'get_sales_invoices': get_sales_invoices,
     'get_purchase_invoices': get_purchase_invoices,
-    
+
     # Transactions
     'get_transaction_summary': get_transaction_summary,
-    
+
     # Create operations
     'create_sales_order': create_sales_order,
     'create_item': create_item,
@@ -1116,7 +1124,7 @@ ERP_TOOLS = {
 def get_available_tools() -> List[Dict]:
     """
     Get list of all available ERP tools with descriptions.
-    
+
     Returns:
         List of tool definitions
     """
@@ -1321,11 +1329,11 @@ def get_available_tools() -> List[Dict]:
 def execute_erp_tool(tool_name: str, parameters: Dict) -> Dict:
     """
     Execute an ERP tool by name with given parameters.
-    
+
     Args:
         tool_name: Name of the tool to execute
         parameters: Dictionary of parameters for the tool
-    
+
     Returns:
         Dictionary with 'success' boolean and 'result' or 'error'
     """
@@ -1334,11 +1342,11 @@ def execute_erp_tool(tool_name: str, parameters: Dict) -> Dict:
             'success': False,
             'error': f'Unknown tool: {tool_name}. Available tools: {list(ERP_TOOLS.keys())}'
         }
-    
+
     try:
         tool_func = ERP_TOOLS[tool_name]
         result = tool_func(**parameters)
-        
+
         # Create tools return the new document's name, or a falsy value when the
         # write was rejected (no create permission, duplicate, validation error,
         # unsupported doctype). Reporting success unconditionally here told the
@@ -1380,7 +1388,7 @@ if __name__ == '__main__':
     # Test the tools
     print('Testing ERP Operator Tools...')
     print()
-    
+
     # System overview
     print('=== System Overview ===')
     overview = get_system_overview()
@@ -1390,28 +1398,28 @@ if __name__ == '__main__':
     print(f"Total Items: {overview['items_summary'].get('TOTAL', 0)}")
     print(f"Warehouses: {len(overview['warehouses'])}")
     print()
-    
+
     # Items
     print('=== Sample Items ===')
     items = get_items(limit=5)
     for item in items:
         print(f"  {item['item_code']}: {item['item_name']} ({item['item_group']})")
     print()
-    
+
     # Customers
     print('=== Customers ===')
     customers = get_customers()
     for cust in customers:
         print(f"  {cust['customer_name']} ({cust['customer_group']})")
     print()
-    
+
     # Suppliers
     print('=== Suppliers ===')
     suppliers = get_suppliers()
     for supp in suppliers:
         print(f"  {supp['supplier_name']} ({supp['supplier_group']})")
     print()
-    
+
     print('=== Available Tools ===')
     tools = get_available_tools()
     print(f'Total tools: {len(tools)}')

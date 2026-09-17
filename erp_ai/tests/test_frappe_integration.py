@@ -213,7 +213,7 @@ chat-marker helpers, which were removed during the hardening pass.
 """
 
     def test_workflow_receipt_creates_auditable_draft(self):
-        session, user = _uniq("shp"), "Administrator"
+        user = "Administrator"
         res = api_mod.workflow_shipment_receipt(
             {"text": "received 10 x ABC-001 from Ship Test Ltd at warehouse Raw Materials"}
         )
@@ -226,7 +226,10 @@ chat-marker helpers, which were removed during the hardening pass.
         self.assertEqual(action.status, "pending")
         self.assertEqual(action.target_doctype, "Purchase Receipt")
         self.assertEqual(action.user, user)
-        self.assertEqual(action.session_id, session)
+        # The draft must be bound to a real session id — never the literal
+        # string "None" (that was the original bug) nor empty.
+        self.assertTrue(action.session_id, "session_id must be populated")
+        self.assertNotEqual(action.session_id, "None")
 
     def test_workflow_receipt_draft_confirms_and_creates_document(self):
         user = "Administrator"
@@ -287,8 +290,12 @@ class TestPartialFailureRollback(FrappeTestCase):
 
     def test_shipment_masters_rolled_back_on_failure(self):
         from erp_ai.workflows.shipment import create_shipment_receipt
+        warehouse = frappe.db.get_value("Warehouse", {"is_group": 0}, "name")
+        if not warehouse:
+            self.skipTest("requires a site with at least one leaf Warehouse")
         data = {
             "supplier": "ROLLBACK-SUPPLIER", "remarks": "test",
+            "warehouse": warehouse,
             "items": [{"item_code": "ROLLBACK-ITEM", "qty": 5}],
         }
         mcp = self._FakeMCP()

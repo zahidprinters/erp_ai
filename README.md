@@ -283,6 +283,127 @@ Tools: `query_doctype`, `get_document`, `create_document`, `update_document`, `p
 | Conversation store | Doctype `AI Chat Message` (fields: user, session_id, role, content) | per-user, last 8 used in context |
 | Draft actions | Doctype `AI Assistant Action` (nonce, expires_on, idempotency_key) | confirmation lifecycle |
 
+
+---
+
+## 🤖 LLM Provider Configuration
+
+ERP AI now supports **multiple LLM providers** beyond local Ollama. Configure in **AI Settings** (`/app/ai-settings` or via `bench --site <site> execute erp_ai.api.setup_ai_settings`).
+
+### Supported Providers
+
+| Provider | Type | Base URL | Default Model | Pricing |
+|----------|------|----------|---------------|---------|
+| **Ollama (Local)** | Local | `http://localhost:11434/api/generate` | `qwen2.5:1.5b` | Free (self-hosted) |
+| **OpenRouter** | Cloud API | `https://openrouter.ai/api/v1/chat/completions` | `~openai/gpt-4o-mini` | Pay-per-token (aggregates 100+ models from OpenAI, Anthropic, Google, Mistral, etc.) |
+| **Together AI** | Cloud API | `https://api.together.ai/v1/chat/completions` | `meta-llama/Llama-3.3-70B-Instruct-Turbo` | Pay-per-token (open-source models) |
+| **Groq** | Cloud API | `https://api.groq.com/openai/v1/chat/completions` | `llama-3.1-8b-instant` | Free tier + pay-per-token (fast Llama inference) |
+| **Anthropic** | Cloud API | `https://api.anthropic.com/v1/messages` | `claude-3-5-haiku-20241022` | Pay-per-token (Claude models) |
+| **OpenAI** | Cloud API | `https://api.openai.com/v1/chat/completions` | `gpt-4o-mini` | Pay-per-token (GPT models) |
+| **Google Gemini** | Cloud API | `https://generativelanguage.googleapis.com/v1beta/models` | `gemini-2.0-flash` | Free tier + pay-per-token |
+| **Mistral** | Cloud API | `https://api.mistral.ai/v1/chat/completions` | `mistral-small-latest` | Pay-per-token |
+| **Custom API** | Any | Your URL | Your choice | Depends on provider |
+| **LM Studio** | Local | `http://localhost:1234/v1/chat/completions` | `lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF` | Free (self-hosted) |
+
+### Configuration Fields (AI Settings DocType)
+
+**General Settings:**
+- **Enable Speaker Output** — Admin toggle: enable/disable TTS speaker for AI responses
+- **Voice Enabled By Default** — New chats start with voice on/off
+- **Default Voice Model** — Piper voice: `en_US-lessac-medium`, `ur_PK-fasih-medium`
+
+**LLM Provider Configuration:**
+- **LLM Provider** — Dropdown: select your provider (Ollama, OpenRouter, Together AI, Groq, Anthropic, OpenAI, Google Gemini, Mistral, Custom API, LM Studio)
+- **API Key** — API key for cloud providers (required for OpenRouter, Together AI, Groq, Anthropic, OpenAI, Google, Mistral)
+- **Custom API Base URL** — Override endpoint for Custom API or LM Studio
+
+**Model Selection:**
+- **Default Model** — Model name for the selected provider (e.g., `qwen2.5:1.5b`, `gpt-4`, `claude-3-opus`, `llama-3.1-8b-instant`)
+- **Available Models (JSON)** — Optional JSON list to populate model dropdown: [{"name": "qwen2.5:1.5b", "provider": "ollama"}, ...]
+
+**Advanced Settings:**
+- **Default Temperature** — 0.0 (deterministic) to 1.0 (creative), default 0.7
+- **Max Tokens** — Response length limit, default 2048
+- **Request Timeout (seconds)** — API timeout, default 120s
+
+**Feature Toggles:**
+- **Enable Chat History** — Store conversation history per user
+- **Enable Voice Input (STT)** — Allow microphone input
+- **Enable MCP Tools** — Allow document queries/creations via MCP
+- **Enable Document Creation Workflows** — Allow draft → confirm workflows
+
+**Provider-Specific Settings:**
+- **OpenAI Organization ID** — For OpenAI organization billing
+- **Anthropic API Version** — API version header (default: `2023-06-01`)
+- **Google API Key** — Alternative key field for Gemini
+- **Mistral API Key** — Alternative key field for Mistral
+
+### Quick Setup Examples
+
+#### Option 1: Keep using local Ollama (default)
+No configuration needed. Ensure Ollama is running:
+```bash
+ollama serve
+ollama pull qwen2.5:1.5b
+```
+
+#### Option 2: Use OpenRouter (access 100+ models via one API)
+1. Get API key: https://openrouter.ai/api-keys
+2. Go to AI Settings, select **OpenRouter** as provider
+3. Enter your API key
+4. Set model to e.g., `~openai/gpt-4o-mini` or `~anthropic/claude-3-haiku`
+
+#### Option 3: Use Together AI (open-source models)
+1. Get API key: https://api.together.ai/settings
+2. Go to AI Settings, select **Together AI** as provider
+3. Enter your API key
+4. Set model to e.g., `meta-llama/Llama-3.3-70B-Instruct-Turbo`
+
+#### Option 4: Use Groq (super-fast Llama inference)
+1. Get API key: https://console.groq.com/keys
+2. Go to AI Settings, select **Groq** as provider
+3. Enter your API key
+4. Set model to e.g., `llama-3.1-8b-instant`
+
+#### Option 5: Use LM Studio (local GUI for open models)
+1. Install LM Studio: https://lmstudio.ai
+2. Download a model in LM Studio
+3. Start local server in LM Studio (default port 1234)
+4. Go to AI Settings, select **LM Studio** as provider
+5. Optionally set Custom API Base URL to `http://localhost:1234/v1/chat/completions`
+
+### Model Recommendations
+
+**For speed + low cost:**
+- Ollama: `qwen2.5:1.5b` or `llama3.2:3b`
+- OpenRouter: `~openai/gpt-4o-mini` or `~google/gemini-flash-1.5`
+- Groq: `llama-3.1-8b-instant`
+
+**For quality (complex tasks):**
+- Ollama: `qwen2.5:7b` or `llama3.1:8b`
+- OpenRouter: `~openai/gpt-4o` or `~anthropic/claude-3-opus`
+- Together AI: `meta-llama/Llama-3.3-70B-Instruct-Turbo`
+
+**For coding tasks:**
+- OpenRouter: `~openai/gpt-4o` or `~deepseek/codestral-latest`
+- Together AI: `gpt-oss-120B` or `deepseek-coder`
+
+### Admin Speaker Toggle (Voice On/Off)
+
+The **"Enable Speaker Output"** checkbox in AI Settings is an **admin-only master toggle** that controls whether any text-to-speech (TTS) output is generated:
+
+- **Location**: `/app/ai-settings` → "Enable Speaker Output"
+- **Permission**: System Manager role only (admin)
+- **When ON (default)**: TTS is available; users can still toggle voice per-chat via `/app/voice-toggle` or the chat interface
+- **When OFF**: All TTS is disabled for every user, regardless of individual voice preferences. The `is_voice_enabled()` check returns `False` immediately before any TTS subprocess is launched.
+
+**Implementation**:
+1. `erp_ai/voice/toggle.py` — `is_voice_enabled()` checks `AI Settings.speaker_enabled` first
+2. `erp_ai/api.py` — `ask_v2_with_voice()` and `text_to_speech_endpoint()` both call `is_voice_enabled()` before TTS
+
+---
+
+
 ---
 
 ## 🩻 Troubleshooting & Debugging

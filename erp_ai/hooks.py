@@ -83,7 +83,8 @@ app_license = "mit"
 # ------------
 
 # before_install = "erp_ai.install.before_install"
-# after_install = "erp_ai.install.after_install"
+after_install = "erp_ai.install.after_install"
+after_migrate = "erp_ai.install.after_migrate"
 
 # Uninstallation
 # ------------
@@ -147,24 +148,20 @@ app_license = "mit"
 
 # Scheduled Tasks
 # ---------------
+# Runtime uses a bounded, reactivate-only worker:
+#   - expire_stale_actions unblocks retries: a ``pending`` draft that was never
+#     confirmed is expired, and a ``processing`` claim whose worker died is
+#     closed as failed (otherwise its idempotency key blocks every retry).
+#   - cleanup_expired_actions trims already-audited terminal rows.
 
-# scheduler_events = {
-# 	"all": [
-# 		"erp_ai.tasks.all"
-# 	],
-# 	"daily": [
-# 		"erp_ai.tasks.daily"
-# 	],
-# 	"hourly": [
-# 		"erp_ai.tasks.hourly"
-# 	],
-# 	"weekly": [
-# 		"erp_ai.tasks.weekly"
-# 	],
-# 	"monthly": [
-# 		"erp_ai.tasks.monthly"
-# 	],
-# }
+scheduler_events = {
+	"hourly": [
+		"erp_ai.tasks.expire_stale_actions"
+	],
+	"daily": [
+		"erp_ai.tasks.cleanup_expired_actions"
+	],
+}
 
 # Testing
 # -------

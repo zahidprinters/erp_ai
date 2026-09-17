@@ -9,6 +9,11 @@ import hashlib
 import json
 from typing import Any, Dict, Optional
 
+# Single source of truth for how long a pending action stays confirmable.
+# Imported by erp_ai.draft_workflow and erp_ai.idempotency so a draft created on
+# either path expires on exactly the same clock (previously 30 min vs 60 min).
+ACTION_EXPIRY_MINUTES = 60
+
 
 def _compute_preview_hash(data: Dict[str, Any]) -> str:
     """Compute a stable hash of proposed changes for integrity verification."""
@@ -24,7 +29,7 @@ def create_audit_record(session: str, user: str, action: str, target_doctype: st
     from frappe.utils import now_datetime
     preview_hash = _compute_preview_hash(proposed_data)
     nonce = frappe.generate_hash(length=12)
-    expires_on = frappe.utils.add_to_date(now_datetime(), minutes=30)
+    expires_on = frappe.utils.add_to_date(now_datetime(), minutes=ACTION_EXPIRY_MINUTES)
     doc = frappe.get_doc({
         "doctype": "AI Assistant Action",
         "user": user,
@@ -86,6 +91,7 @@ def record_completion(
     result: Dict[str, Any],
     rollback_ref: Optional[Dict[str, Any]] = None,
     changed_fields: Optional[list] = None,
+    confirmed_at: Optional[Any] = None,
 ) -> None:
     """Mark an action as completed with the full result payload.
 
@@ -100,6 +106,8 @@ def record_completion(
     action.status = "completed"
     action.target_docname = target_docname
     action.completed_at = now_datetime()
+    if confirmed_at:
+        action.confirmed_at = confirmed_at
     if rollback_ref:
         action.rollback_reference = frappe.as_json(rollback_ref)
     action.draft_data = frappe.as_json({
@@ -118,8 +126,10 @@ def record_completion(
         "result": result,
         "completed_at": str(now_datetime()),
         "changed_fields": list(changed_fields) if changed_fields else None,
+        "rollback_reference": rollback_ref if rollback_ref else None,
     })
     action.save()
+    frappe.db.commit()
 
 
 def record_failure(action_id: str, error: str, rollback_ref: Optional[Dict[str, Any]] = None) -> None:
@@ -148,8 +158,10 @@ def record_failure(action_id: str, error: str, rollback_ref: Optional[Dict[str, 
         ),
         "error": error[:500],
         "failed_at": str(now_datetime()),
+        "rollback_reference": rollback_ref if rollback_ref else None,
     })
     action.save()
+    frappe.db.commit()
 
 
 def verify_preview_integrity(action_id: str, proposed_data: Dict[str, Any]) -> bool:
@@ -169,3 +181,32 @@ def get_audit_trail(session: str, user: str) -> list:
         order_by="creation desc",
         limit_page_length=50)
     return records
+
+
+def log_error_safely(title: str, message=None) -> None:
+    """Log an error without letting the logging call mask the original failure.
+
+    ``frappe.log_error(title=None, message=None)`` takes the TITLE first (it only
+    swaps the two when the first argument is multi-line) and the Error Log
+    ``method``/title column is capped at 140 characters. Passing a long dynamic
+    string first therefore raised CharacterLengthExceededError from *inside* the
+    caller's ``except`` block, so the real tool/workflow error was replaced by a
+    logging error and the failure reason never reached the log.
+
+    Truncates the title and falls back to the file logger if Frappe logging
+    itself is unavailable, so this helper can never raise.
+    """
+    import frappe
+    title = (str(title) or "erp_ai error")[:140]
+    try:
+        frappe.log_error(
+            title=title,
+            message=message if message is not None
+            else frappe.get_traceback(with_context=True),
+        )
+    except Exception:
+        # Never let observability break the code path that is already failing.
+        try:
+            frappe.logger("erp_ai").error("%s :: %s", title, message)
+        except Exception:
+            pass

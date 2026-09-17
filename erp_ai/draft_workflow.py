@@ -5,7 +5,7 @@ Flow:
 1. User speaks naturally → AI detects intent (doctype)
 2. AI extracts available data from prompt
 3. AI checks required fields → asks for missing ones
-4. AI stores draft as JSON in chat: [DRAFT]|doctype|json_data
+4. AI stores the draft as an `AI Assistant Action` record (status=pending)
 5. When complete → AI shows preview/overview
 6. User confirms → AI creates document (Draft)
 7. User says "submit" → AI submits document
@@ -17,6 +17,7 @@ import re
 
 import frappe
 
+from erp_ai.audit import ACTION_EXPIRY_MINUTES, log_error_safely
 from erp_ai.mcp.server import FrappeMCP
 
 # Single source of truth for doctype schemas — imported from erp_ai.schema.
@@ -107,30 +108,13 @@ def get_uom_category(uom_name):
 
 
 # =============================================================================
-# DRAFT STORE — use AI Chat Message with [DRAFT] prefix
+# DRAFT STORE — AI Assistant Action is the ONLY authoritative store
 # =============================================================================
-
-def _draft_key(session):
-    return "[DRAFT]|"
-
-
-def save_draft(session, doctype, data):
-    """Save draft data to chat message."""
-    if not session:
-        return False
-    key = _draft_key(session)
-    content = f"{key}{doctype}|{json.dumps(data, default=str)}"
-    frappe.get_doc({
-        "doctype": "AI Chat Message",
-        "user": frappe.session.user,
-        "session_id": session,
-        "role": "user",
-        "content": content,
-    }).insert()
-    # Draft markers are part of the caller's request transaction —
-    # the commit happens once at the workflow boundary, not here.
-    return True
-
+# Pending workflow state lives in `AI Assistant Action` (status + draft_data).
+# The legacy chat-marker store (`[DRAFT]` / `[DRAFT_CLEARED]` rows in
+# `AI Chat Message`) was deleted: two stores for one lifecycle desynchronise
+# whenever one path reads what another wrote. `get_draft` below is a thin read
+# view over the action record — a projection, never a second source of truth.
 
 def get_draft(session, user=None):
     """Get pending action from AI Assistant Action DocType.
@@ -172,34 +156,21 @@ def get_draft(session, user=None):
     }
 
 
-def clear_draft(session, user=None):
-    """Mark draft as consumed (writes a [DRAFT_CLEARED] marker; get_draft honours it)."""
-    if not session:
-        return False
-    user = user or frappe.session.user
-    frappe.get_doc({
-        "doctype": "AI Chat Message",
-        "user": user,
-        "session_id": session,
-        "role": "user",
-        "content": "[DRAFT_CLEARED]",
-    }).insert()
-    # Same request-boundary rule as save_draft — no commit here.
-    return True
-
-
 # ---------------------------------------------------------------------------
 # Phase 2 — dedicated, user-bound draft persistence (AI Assistant Action).
-# Replaces chat-marker drafts as the primary store of pending operations.
+# This is the ONE authoritative store of pending operations; the legacy
+# chat-marker drafts were removed (see the DRAFT STORE note above).
 # ---------------------------------------------------------------------------
-
-ACTION_EXPIRY_MINUTES = 60
 
 
 def _get_action(action_id=None, session=None, user=None, status="pending"):
-    """Return an AI Assistant Action Doc, or None.
+    """Resolve an AI Assistant Action, or None.
 
-    Exactly one of `action_id` or (`session`+`user`) may be provided.
+    Exactly one of ``action_id`` or (``session``+``user``) may be provided, and
+    the return type follows the selector: an ``action_id`` yields the full
+    Document (the caller reads/mutates it), while the session lookup yields just
+    the *name* string (the caller only needs to address the action). Callers must
+    not assume a Document on the session branch.
     """
     user = user or frappe.session.user
     if action_id:
@@ -211,6 +182,28 @@ def _get_action(action_id=None, session=None, user=None, status="pending"):
             "name",
         )
     return None
+
+
+def _supersede(action_name):
+    """Move a superseded pending action into the terminal ``cancelled`` state.
+
+    Replaces the previous best-effort cleanup, which called ``.cancel()`` and
+    ``.delete()`` on the action *name* (a ``str``, because the session branch of
+    ``_get_action`` returns a name) and therefore always raised, was swallowed,
+    and left the old action behind. Two pending actions per session+user meant
+    the session lookup in ``confirm_draft`` could pick the stale one and execute
+    a draft the user had already replaced.
+    """
+    try:
+        action = frappe.get_doc("AI Assistant Action", action_name)
+        action.status = "cancelled"
+        action.failure_reason = "Superseded by a newer draft"
+        action.save(ignore_permissions=True)
+    except Exception:
+        frappe.log_error(
+            frappe.get_traceback(),
+            "erp_ai.draft_workflow: could not supersede action %s" % action_name,
+        )
 
 
 def create_draft(session, action, target_doctype, draft_data, user=None):
@@ -239,17 +232,12 @@ def create_draft(session, action, target_doctype, draft_data, user=None):
     now = frappe.utils.now_datetime()
     expiry = frappe.utils.add_to_date(now, minutes=ACTION_EXPIRY_MINUTES)
 
-    # Clean up any stale pending action for this session/user first.
+    # Supersede any stale pending action for this session/user: the new draft
+    # must be the only confirmable action, or confirm_draft's session lookup can
+    # resolve the stale one.
     _existing = _get_action(session=session, user=user, status="pending")
     if _existing:
-        try:
-            _existing.cancel()
-        except Exception:
-            pass
-        try:
-            _existing.delete()
-        except Exception:
-            pass
+        _supersede(_existing)
 
     import secrets
 
@@ -280,6 +268,7 @@ def create_draft(session, action, target_doctype, draft_data, user=None):
         "nonce": nonce,
         "expires_on": expiry.isoformat(),
         "preview_hash": preview_hash,
+        "draft_data": draft_data,
     }
 
 
@@ -337,6 +326,11 @@ def confirm_draft(session, user=None, expected_nonce=None, action_id=None):
     On success the action is atomically moved through a transient ``processing``
     state to ``completed``. On execution failure the action is moved to ``failed``
     with a recorded reason, so failed attempts are not treated as completed.
+    Partial inserts from a failed attempt are rolled back before the failure is
+    recorded, so a failed action never commits half a document.
+
+    Idempotent: the action record is the only state store, a terminal action is
+    never re-executed, and a repeated confirm reports the recorded outcome.
     """
     user = user or frappe.session.user
 
@@ -352,11 +346,21 @@ def confirm_draft(session, user=None, expected_nonce=None, action_id=None):
     if action.user != user:
         return {"error": "This action belongs to a different user"}
 
-    if action.session_id != str(session):
+    if session is not None and action.session_id != str(session):
         return {"error": "Session mismatch for this action"}
 
     if action.status != "pending":
-        return {"error": "The pending action is no longer available"}
+        # Idempotent re-confirm: a terminal action is never re-executed, but the
+        # recorded outcome is reported so a retried request (client timeout after
+        # a successful confirmation) gets a truthful answer instead of a dead end.
+        return {
+            "error": "The pending action is no longer available (status: %s)" % action.status,
+            "already_handled": True,
+            "already_completed": action.status == "completed",
+            "status": action.status,
+            "doctype": action.target_doctype,
+            "name": action.target_docname,
+        }
 
     expires_on = action.expires_on
     if isinstance(expires_on, str):
@@ -391,11 +395,26 @@ def confirm_draft(session, user=None, expected_nonce=None, action_id=None):
     if not claimed:
         return {"error": "Action expired or could not be claimed"}
 
+    # Executing the draft can insert a document and then fail on a later step, so
+    # the failure paths must be able to discard exactly that partial work. A full
+    # ``frappe.db.rollback()`` is too blunt here: it would also undo the claim
+    # above and — when ``create_draft``'s insert has not been committed yet (same
+    # transaction) — the action row itself, so the failure would vanish from the
+    # audit trail instead of being recorded. A savepoint scopes the rollback to
+    # the execution only.
+    save_point = "erp_ai_confirm_exec"
+    frappe.db.savepoint(save_point)
+
     try:
         mcp = FrappeMCP()
         result = create_document_from_draft(target_doctype, draft_data, mcp)
 
         if isinstance(result, dict) and result.get("error"):
+            # Discard partial inserts from the failed attempt before the failure
+            # is recorded: create_document_from_draft may have saved a document
+            # and then failed on a later step. Without this rollback the partial
+            # document would be committed by record_failure's own commit.
+            frappe.db.rollback(save_point=save_point)
             _finalise_action(
                 action_id,
                 status="failed",
@@ -418,19 +437,13 @@ def confirm_draft(session, user=None, expected_nonce=None, action_id=None):
             result_payload=result if isinstance(result, dict) else {},
         )
 
-        _write_doc_created_marker(
-            user=user,
-            session=session,
-            target_doctype=target_doctype,
-            doc_name=(
-                result.get("name")
-                if isinstance(result, dict) and result.get("name")
-                else None
-            ),
-        )
-
+        # No second store to keep in sync: the action record above IS the outcome.
         return result
     except Exception as exc:
+        # Same reasoning as the error-result branch: never commit a partial
+        # document as the side effect of recording the failure — and only undo
+        # the execution, not the action record that carries the failure.
+        frappe.db.rollback(save_point=save_point)
         _finalise_action(
             action_id,
             status="failed",
@@ -438,8 +451,30 @@ def confirm_draft(session, user=None, expected_nonce=None, action_id=None):
             failure_reason=str(exc),
             result_payload={"error": str(exc)},
         )
-        frappe.log_error("erp_ai: confirm_draft failed for %s: %s" % (action_id, exc))
+        log_error_safely(
+            "erp_ai: confirm_draft failed for %s" % action_id, str(exc))
         return {"error": "Confirmation failed. Please try again."}
+
+
+def _rollback_reference(action_id, target_docname, summary):
+    """Build the stable pointer persisted on a completed/failed action.
+
+    Always carries the action id, the target DocType/docname and the preview
+    hash captured when the draft was created, so an operator can verify that the
+    payload which executed is exactly the payload that was confirmed. The
+    reference therefore points at the *created document* (plus the confirmed
+    snapshot), not merely at the executing payload.
+    """
+    stored = frappe.db.get_value(
+        "AI Assistant Action", action_id, ["target_doctype", "preview_hash"], as_dict=True
+    ) or {}
+    return {
+        "action_id": action_id,
+        "target_doctype": stored.get("target_doctype"),
+        "target_docname": target_docname,
+        "preview_hash": stored.get("preview_hash"),
+        "result_summary": summary,
+    }
 
 
 def _finalise_action(
@@ -470,14 +505,15 @@ def _finalise_action(
 
     if status == "failed":
         if not rollback_ref:
-            rollback_ref = {
-                "target_docname": target_docname,
-                "result_summary": {
+            rollback_ref = _rollback_reference(
+                action_id,
+                target_docname,
+                {
                     "status": "failed",
                     "error": failure_reason or "unknown",
                     "confirmed_at": str(confirmed_at) if confirmed_at else None,
                 },
-            }
+            )
         audit.record_failure(
             action_id,
             failure_reason or "unknown",
@@ -498,13 +534,14 @@ def _finalise_action(
         )
 
     if not rollback_ref:
-        rollback_ref = {
-            "target_docname": target_docname,
-            "result_summary": {
+        rollback_ref = _rollback_reference(
+            action_id,
+            target_docname,
+            {
                 k: v for k, v in (result_payload or {}).items()
                 if k in ("name", "doctype", "status", "steps", "message", "error")
             },
-        }
+        )
 
     audit.record_completion(
         action_id,
@@ -512,29 +549,8 @@ def _finalise_action(
         result=result_payload or {},
         rollback_ref=rollback_ref,
         changed_fields=changed_fields,
+        confirmed_at=confirmed_at,
     )
-
-
-def _write_doc_created_marker(user, session, target_doctype, doc_name):
-    """Write a backward-compat marker so the existing submit path can still find it."""
-    try:
-        content = "[DOC_CREATED]" if not doc_name else "%s|%s|%s" % (
-            target_doctype,
-            doc_name,
-            "[DOC_CREATED]",
-        )
-        frappe.get_doc(
-            {
-                "doctype": "AI Chat Message",
-                "user": user,
-                "session_id": session,
-                "role": "assistant",
-                "content": content,
-            }
-        ).insert()
-        # Committed with the action finalisation above — not a separate boundary.
-    except Exception:
-        pass
 
 
 # =============================================================================
@@ -727,7 +743,7 @@ def safe_parse_json(payload, label="payload"):
         try:
             return json.loads(payload)
         except ValueError as exc:
-            frappe.log_error("erp_ai: invalid %s: %s" % (label, exc))
+            log_error_safely("erp_ai: invalid %s" % label, str(exc))
             return None
     return None
 
@@ -970,6 +986,22 @@ def detect_intent(prompt):
 # ENTITY RESOLUTION (exact + fuzzy, with user selection)
 # =============================================================================
 
+def _scoped_read(doctype, filters, fields, limit=1):
+    """Permission-aware read used by entity resolution.
+
+    ``frappe.db.get_value``/``frappe.db.get_all`` apply no permissions at all,
+    so a user restricted by User Permissions (company, item, warehouse, ...)
+    could resolve and read documents outside their scope. ``frappe.get_list``
+    applies the role check and the row-level filters; a DocType the user may
+    not read yields no candidates instead of an exception, so resolution fails
+    closed with a clarification instead of leaking a name.
+    """
+    try:
+        return frappe.get_list(doctype, filters=filters, fields=fields, limit_page_length=limit)
+    except frappe.PermissionError:
+        return []
+
+
 def resolve_item(name, mcp=None, limit=5):
     """Resolve an item name/code to ERPNext Item records.
 
@@ -983,26 +1015,23 @@ def resolve_item(name, mcp=None, limit=5):
         mcp = FrappeMCP()
     # 1. Exact code match
     code = name.strip().upper()
-    by_code = frappe.db.get_value("Item", {"item_code": code}, ["name", "item_code", "item_name", "stock_uom", "standard_rate"], as_dict=True)
+    by_code = _scoped_read("Item", {"item_code": code}, ["name", "item_code", "item_name", "stock_uom", "standard_rate"])
     if by_code:
-        return [by_code]
+        return by_code
     # 2. Exact item_name match
-    by_name = frappe.db.get_value("Item", {"item_name": name.strip()}, ["name", "item_code", "item_name", "stock_uom", "standard_rate"], as_dict=True)
+    by_name = _scoped_read("Item", {"item_name": name.strip()}, ["name", "item_code", "item_name", "stock_uom", "standard_rate"])
     if by_name:
-        return [by_name]
+        return by_name
     # 3. Fuzzy search via MCP (now permission-safe)
     found = mcp.call_tool("search_documents", {"query": name, "doctype": "Item", "limit": limit})
     results = found.get("results", [])
     candidates = []
     for r in results:
-        d = frappe.db.get_value("Item", r["name"], ["name", "item_code", "item_name", "stock_uom", "standard_rate", "is_stock_item"], as_dict=True)
-        if d:
-            candidates.append(d)
+        candidates.extend(_scoped_read("Item", {"name": r["name"]}, ["name", "item_code", "item_name", "stock_uom", "standard_rate", "is_stock_item"]))
     # 4. Fallback: try partial name match
     if not candidates:
         like = "%" + name.strip() + "%"
-        rows = frappe.db.get_all("Item", filters={"item_name": ["like", like]}, fields=["name", "item_code", "item_name", "stock_uom", "standard_rate", "is_stock_item"], limit_page_length=limit)
-        candidates = rows
+        candidates = _scoped_read("Item", {"item_name": ["like", like]}, ["name", "item_code", "item_name", "stock_uom", "standard_rate", "is_stock_item"], limit)
     return candidates
 
 
@@ -1018,22 +1047,19 @@ def resolve_party(name, doctype, mcp=None, limit=5):
         mcp = FrappeMCP()
     field = "customer_name" if doctype == "Customer" else "supplier_name"
     # 1. Exact match
-    by_name = frappe.db.get_value(doctype, {field: name.strip()}, ["name", field], as_dict=True)
+    by_name = _scoped_read(doctype, {field: name.strip()}, ["name", field])
     if by_name:
-        return [by_name]
+        return by_name
     # 2. Fuzzy search
     found = mcp.call_tool("search_documents", {"query": name, "doctype": doctype, "limit": limit})
     results = found.get("results", [])
     candidates = []
     for r in results:
-        d = frappe.db.get_value(doctype, r["name"], ["name", field], as_dict=True)
-        if d:
-            candidates.append(d)
+        candidates.extend(_scoped_read(doctype, {"name": r["name"]}, ["name", field]))
     # 3. Partial match fallback
     if not candidates:
         like = "%" + name.strip() + "%"
-        rows = frappe.db.get_all(doctype, filters={field: ["like", like]}, fields=["name", field], limit_page_length=limit)
-        candidates = rows
+        candidates = _scoped_read(doctype, {field: ["like", like]}, ["name", field], limit)
     return candidates
 
 
@@ -1101,6 +1127,8 @@ def create_document_from_draft(doctype, data, mcp):
         result = _create_supplier_doc(data, mcp)
     elif doctype == "Payment Entry":
         result = _create_payment_entry_doc(data, mcp)
+    elif doctype == "Purchase Receipt":
+        result = _create_purchase_receipt_doc(data, mcp)
     elif doctype in DOCTYPE_SCHEMAS:
         # Generic, schema-driven creation covers every registry doctype
         # (BOM, Work Order, Job Card, Quality Inspection, Asset*, Employee,
@@ -1141,6 +1169,94 @@ def _create_generic_doc(doctype, data, mcp):
     return result
 
 
+def _create_purchase_receipt_doc(data, mcp):
+    """Create a Purchase Receipt with required ERPNext fields populated."""
+    import frappe
+    schema = DOCTYPE_SCHEMAS.get("Purchase Receipt", {})
+    allowed = set(schema.get("required", []) + schema.get("optional", []))
+    doc_data = {"doctype": "Purchase Receipt"}
+    for key in allowed:
+        val = data.get(key)
+        if val not in (None, ""):
+            doc_data[key] = val
+    child = schema.get("child_table")
+    if child:
+        rows = data.get(child["fieldname"])
+        if isinstance(rows, list) and rows:
+            allowed_child = set(child.get("required", []) + child.get("optional", []))
+            doc_data[child["fieldname"]] = [
+                {k: v for k, v in row.items() if k in allowed_child and v not in (None, "")}
+                for row in rows
+            ]
+    # Ensure supplier exists
+    supplier = doc_data.get("supplier")
+    if supplier:
+        supplier_exists = mcp.call_tool("query_doctype", {"doctype": "Supplier", "filters": {"supplier_name": supplier}})
+        if supplier_exists.get("count", 0) == 0:
+            try:
+                # Ensure supplier group exists
+                if not frappe.db.exists("Supplier Group", "All Supplier Groups"):
+                    frappe.get_doc({"doctype": "Supplier Group", "supplier_group_name": "All Supplier Groups", "is_group": 1}).insert()
+                # Build supplier data with mandatory custom fields
+                supplier_data = {"doctype": "Supplier", "supplier_name": supplier, "supplier_type": "Company",
+                    "supplier_group": "All Supplier Groups"}
+                # Provide placeholder for mandatory custom fields (e.g. FBR NTN/CNIC)
+                meta = frappe.get_meta("Supplier")
+                for df in meta.fields:
+                    if df.reqd and df.fieldname not in supplier_data and df.fieldname not in ("naming_series", "supplier_name"):
+                        if df.fieldname in ("fbr_ntn_cnic", "ntn", "cnic"):
+                            supplier_data[df.fieldname] = "0000000"
+                        elif df.fieldtype in ("Data", "Int", "Check"):
+                            supplier_data[df.fieldname] = ""
+                        elif df.fieldtype == "Select":
+                            supplier_data[df.fieldname] = "No"
+                frappe.get_doc(supplier_data).insert()
+            except Exception as e:
+                frappe.log_error("erp_ai: supplier creation failed", str(e))
+    # Ensure items exist
+    for item in doc_data.get("items", []):
+        item_code = item.get("item_code")
+        if item_code and not frappe.db.exists("Item", item_code):
+            try:
+                item_data = {"doctype": "Item", "item_code": item_code, "item_name": item_code,
+                    "item_group": "Products", "stock_uom": "Nos", "is_stock_item": 1}
+                # Provide placeholder for mandatory custom fields
+                meta = frappe.get_meta("Item")
+                for df in meta.fields:
+                    if df.reqd and df.fieldname not in item_data and df.fieldname not in ("naming_series", "item_name", "item_code"):
+                        if df.fieldtype in ("Data", "Int", "Check"):
+                            item_data[df.fieldname] = ""
+                        elif df.fieldtype == "Select":
+                            item_data[df.fieldname] = "No"
+                frappe.get_doc(item_data).insert()
+            except Exception as e:
+                frappe.log_error("erp_ai: item creation failed", str(e))
+    # Populate required ERPNext fields that are not in our schema
+    company = doc_data.get("company") or frappe.defaults.get_global_default("company")
+    doc_data["company"] = company
+    currency = frappe.defaults.get_global_default("currency") or company
+    doc_data["currency"] = currency
+    doc_data["price_list_currency"] = currency
+    doc_data["exchange_rate"] = 1.0
+    doc_data["conversion_rate"] = 1.0
+    # Compute net_total from items
+    net_total = sum(
+        (item.get("qty", 0) or 0) * (item.get("rate", 0) or 0)
+        for item in doc_data.get("items", [])
+    )
+    doc_data["net_total"] = net_total
+    doc_data["base_net_total"] = net_total
+    doc_data["net_total_in_words"] = ""
+    result = mcp.call_tool("create_document", {"doctype": "Purchase Receipt", "data": doc_data})
+    if isinstance(result, dict) and not result.get("error") and result.get("name"):
+        result["print_url"] = (
+            "/api/method/frappe.utils.print_format.download_pdf"
+            "?doctype=%s&name=%s&format=Standard"
+            % (frappe.utils.quote("Purchase Receipt"), frappe.utils.quote(result["name"]))
+        )
+    return result
+
+
 def _create_item_doc(data, mcp):
     item_name = data.get("item_name", "").strip()
     if not item_name:
@@ -1156,7 +1272,12 @@ def _create_item_doc(data, mcp):
             frappe.get_doc({"doctype": "Item Group", "item_group_name": ig}).insert()
         except Exception:
             pass
-    doc_data = {"doctype": "Item", "item_code": code, "item_name": item_name, "item_group": ig, "stock_uom": uom, "is_stock_item": 1, "standard_rate": data.get("standard_rate", 0)}
+    doc_data = {"doctype": "Item", "item_code": code, "item_name": item_name, "item_group": ig, "stock_uom": uom, "is_stock_item": data.get("is_stock_item", 1), "standard_rate": data.get("standard_rate", 0)}
+    # Optional Item fields the operator tool advertises. They were dropped here
+    # before, so a caller-supplied description/valuation rate vanished silently.
+    for opt in ("description", "valuation_rate"):
+        if data.get(opt) not in (None, ""):
+            doc_data[opt] = data[opt]
     result = mcp.call_tool("create_document", {"doctype": "Item", "data": doc_data})
     if "error" in result:
         doc_data["item_code"] = code + "-" + frappe.generate_hash(length=4).upper()
@@ -1278,6 +1399,9 @@ def _create_customer_doc(data, mcp):
         doc_data["mobile_no"] = data["mobile_no"]
     if data.get("email"):
         doc_data["email_id"] = data["email"]
+    for opt in ("customer_type", "default_currency", "website"):
+        if data.get(opt) not in (None, ""):
+            doc_data[opt] = data[opt]
     result = mcp.call_tool("create_document", {"doctype": "Customer", "data": doc_data})
     return result
 
@@ -1295,6 +1419,9 @@ def _create_supplier_doc(data, mcp):
         doc_data["mobile_no"] = data["mobile_no"]
     if data.get("email"):
         doc_data["email_id"] = data["email"]
+    for opt in ("country", "default_currency", "website"):
+        if data.get(opt) not in (None, ""):
+            doc_data[opt] = data[opt]
     result = mcp.call_tool("create_document", {"doctype": "Supplier", "data": doc_data})
     return result
 

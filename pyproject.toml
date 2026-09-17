@@ -74,3 +74,11 @@ typing-modules = ["frappe.types.DF"]
 quote-style = "double"
 indent-style = "tab"
 docstring-code-format = true
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.package-data]
+"erp_ai" = [
+    "erp_ai/workspace/ai_assistant_hub/ai_assistant_hub.json",
+]

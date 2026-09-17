@@ -20,10 +20,38 @@ def _ai_home():
         whisper = os.path.join(c, "whisper.cpp/build/bin/whisper-cli")
         if os.path.exists(whisper):
             return c
-    return cands[-1]
+    # An explicitly configured root wins over the hardcoded guess: the previous
+    # fallback silently wrote temp files under /home/erpnext/ai even when
+    # AI_HOME pointed somewhere else (and often un-creatable).
+    return env or cands[-1]
 
 
 ALLOWED_AUDIO_FORMATS = frozenset({"webm", "wav", "mp3", "ogg", "m4a", "flac"})
+
+# Hard bounds (audit point 16). A wedged decoder or an oversized upload must not
+# hang a worker or exhaust the disk, so every subprocess is bounded and every
+# input has a ceiling.
+MAX_AUDIO_BYTES = 10 * 1024 * 1024   # matches the attachment intake cap
+MAX_TTS_CHARS = 1000
+FFMPEG_TIMEOUT = 30
+WHISPER_TIMEOUT = 120
+TTS_TIMEOUT = 30
+
+
+def _private_tmp_dir(home):
+    """Create and lock down the voice working directory.
+
+    Uploaded audio and synthesised speech are private data: they were written to
+    a default-permission directory (and TTS straight into world-writable
+    ``/tmp``), so any local user could read them.
+    """
+    tmp = os.path.join(home, "tmp")
+    os.makedirs(tmp, exist_ok=True)
+    try:
+        os.chmod(tmp, 0o700)
+    except OSError:
+        pass
+    return tmp
 
 
 def voice_to_text(audio_bytes: bytes, fmt: str = "webm") -> Dict[str, Any]:
@@ -35,34 +63,54 @@ def voice_to_text(audio_bytes: bytes, fmt: str = "webm") -> Dict[str, Any]:
     if fmt not in ALLOWED_AUDIO_FORMATS:
         return {"error": "Unsupported audio format: %s" % fmt}
 
+    if len(audio_bytes) > MAX_AUDIO_BYTES:
+        return {"error": "Audio too large: %d bytes (limit %d)"
+                          % (len(audio_bytes), MAX_AUDIO_BYTES)}
+
     home = _ai_home()
-    tmp = os.path.join(home, "tmp")
-    os.makedirs(tmp, exist_ok=True)
+    tmp = _private_tmp_dir(home)
     # Unique temp files per call to avoid collisions between concurrent users
     token = frappe.generate_hash(length=8)
     raw_path = os.path.join(tmp, "voice_in_%s.%s" % (token, fmt))
     wav_path = os.path.join(tmp, "voice_out_%s.wav" % token)
-    with open(raw_path, "wb") as f:
-        f.write(audio_bytes)
+    # Cleanup is in a `finally`: it used to run only on the success path, so a
+    # failed conversion or an unprovisioned runtime leaked both temp files.
+    try:
+        with open(raw_path, "wb") as handle:
+            handle.write(audio_bytes)
 
-    ffmpeg_result = subprocess.run(["ffmpeg", "-y", "-i", raw_path, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", wav_path], capture_output=True)
-    if ffmpeg_result.returncode != 0:
-        return {"error": "Audio conversion failed: %s" % ffmpeg_result.stderr.decode("utf-8", errors="replace")[:200]}
-    whisper = os.path.join(home, "whisper.cpp/build/bin/whisper-cli")
-    model = os.path.join(home, "models/ggml-tiny.bin")
-    if not (os.path.exists(whisper) and os.path.exists(model)):
-        return {"error": "Whisper runtime not provisioned — run voice/setup_voice.sh"}
-    env = dict(os.environ)
-    env["LD_LIBRARY_PATH"] = os.path.dirname(whisper) + ":" + env.get("LD_LIBRARY_PATH", "")
-    p = subprocess.run([whisper, "-m", model, "-f", wav_path, "-nt", "-np"], capture_output=True, text=True, env=env)
-    text = " ".join(l.strip() for l in p.stdout.splitlines() if l.strip()).strip()
-    # Clean up temp files
-    for p in (raw_path, wav_path):
         try:
-            os.remove(p)
-        except OSError:
-            pass
-    return {"text": text or "(no speech detected)"}
+            ffmpeg_result = subprocess.run(
+                ["ffmpeg", "-y", "-i", raw_path, "-ar", "16000", "-ac", "1",
+                 "-c:a", "pcm_s16le", wav_path],
+                capture_output=True, timeout=FFMPEG_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            return {"error": "Audio conversion timed out after %ss" % FFMPEG_TIMEOUT}
+        if ffmpeg_result.returncode != 0:
+            return {"error": "Audio conversion failed: %s" % ffmpeg_result.stderr.decode("utf-8", errors="replace")[:200]}
+        whisper = os.path.join(home, "whisper.cpp/build/bin/whisper-cli")
+        model = os.path.join(home, "models/ggml-tiny.bin")
+        if not (os.path.exists(whisper) and os.path.exists(model)):
+            return {"error": "Whisper runtime not provisioned — run voice/setup_voice.sh"}
+        env = dict(os.environ)
+        env["LD_LIBRARY_PATH"] = os.path.dirname(whisper) + ":" + env.get("LD_LIBRARY_PATH", "")
+        try:
+            proc = subprocess.run([whisper, "-m", model, "-f", wav_path, "-nt", "-np"],
+                                  capture_output=True, text=True, env=env,
+                                  timeout=WHISPER_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            return {"error": "Transcription timed out after %ss" % WHISPER_TIMEOUT}
+        if proc.returncode != 0:
+            return {"error": "Transcription failed: %s" % (proc.stderr or "").strip()[:200]}
+        text = " ".join(l.strip() for l in proc.stdout.splitlines() if l.strip()).strip()
+        return {"text": text or "(no speech detected)"}
+    finally:
+        # `path`, not `p`: the old loop variable shadowed the subprocess result.
+        for path in (raw_path, wav_path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
 
 def text_to_speech(text: str, lang: str = "en") -> Dict[str, Any]:
@@ -72,6 +120,11 @@ def text_to_speech(text: str, lang: str = "en") -> Dict[str, Any]:
     import frappe
     if not text:
         return {"error": "No text provided"}
+
+    # Unbounded input meant one long caption could pin a worker inside piper.
+    if len(text) > MAX_TTS_CHARS:
+        return {"error": "Text too long: %d characters (limit %d)"
+                          % (len(text), MAX_TTS_CHARS)}
 
     home = _ai_home()
     if lang == "ur":
@@ -83,20 +136,31 @@ def text_to_speech(text: str, lang: str = "en") -> Dict[str, Any]:
         return {"error": "Voice model not found: %s" % model}
 
     filename = "tts_%s.wav" % frappe.generate_hash(length=8)
-    output_path = os.path.join("/tmp", filename)
+    # Private working directory: the file used to be written straight into
+    # world-readable /tmp and was left behind whenever piper failed.
+    output_path = os.path.join(_private_tmp_dir(home), filename)
 
     try:
         process = subprocess.run(
-            [os.path.join(home, "piper/piper"), "--model", model, "--output_file", output_path],
-            input=text.encode("utf-8"), capture_output=True, timeout=30)
+            [os.path.join(home, "piper/piper"), "--model", model,
+             "--output_file", output_path],
+            input=text.encode("utf-8"), capture_output=True, timeout=TTS_TIMEOUT)
         if process.returncode != 0:
             return {"error": "TTS failed: %s" % process.stderr.decode()}
         public_path = frappe.utils.get_site_path("public", "files", "tts", filename)
         os.makedirs(os.path.dirname(public_path), exist_ok=True)
         shutil.move(output_path, public_path)
         return {"url": "/files/tts/" + filename, "text": text[:100]}
+    except subprocess.TimeoutExpired:
+        return {"error": "TTS timed out after %ss" % TTS_TIMEOUT}
     except Exception as e:
         return {"error": str(e)}
+    finally:
+        # A no-op once shutil.move has taken the file; removes a failed run's wav.
+        try:
+            os.remove(output_path)
+        except OSError:
+            pass
 
 # ---------------------------------------------------------------------------
 # Emergency voice stop surface

@@ -71,14 +71,50 @@ def validate_file(filename: str, size_bytes: int, mime_type: str = None,
     return None
 
 
+def _is_within(base_dir: str, path: str) -> bool:
+    """Canonical containment check: is ``path`` inside ``base_dir``?
+
+    The previous string ``startswith`` comparison treats the sibling directory
+    ``/tmp/erp_ai_uploads_evil`` as being inside ``/tmp/erp_ai_uploads``.
+    """
+    base_real = os.path.realpath(base_dir)
+    try:
+        return os.path.commonpath([base_real, os.path.realpath(path)]) == base_real
+    except ValueError:
+        # Mixed absolute/relative paths or different drives -> not contained.
+        return False
+
+
+def _ensure_base_dir(base_dir: str) -> bool:
+    """Create the upload dir private to this process user. Returns False if unsafe.
+
+    ``/tmp`` is world-writable, so the directory must not be readable by other
+    local users; and if it already exists owned by somebody else they could read
+    our uploads or have pre-created a symlink for us to write through, so we
+    refuse to use it.
+    """
+    try:
+        os.makedirs(base_dir, mode=0o700, exist_ok=True)
+        st = os.stat(base_dir)
+        if st.st_uid != os.getuid():
+            return False
+        if st.st_mode & 0o077:
+            os.chmod(base_dir, 0o700)
+        return True
+    except OSError:
+        return False
+
+
 def _safe_path(base_dir: str, filename: str) -> Optional[str]:
     """Resolve a safe file path, preventing directory traversal."""
-    os.makedirs(base_dir, exist_ok=True)
+    if not _ensure_base_dir(base_dir):
+        return None
     safe_name = os.path.basename(filename)
     if not safe_name or safe_name.startswith("."):
         return None
-    full_path = os.path.realpath(os.path.join(base_dir, safe_name))
-    if not full_path.startswith(os.path.realpath(base_dir)):
+    base_real = os.path.realpath(base_dir)
+    full_path = os.path.realpath(os.path.join(base_real, safe_name))
+    if not _is_within(base_real, full_path):
         return None
     return full_path
 
@@ -86,7 +122,7 @@ def _safe_path(base_dir: str, filename: str) -> Optional[str]:
 def _require_allowed_path(file_path: str) -> Optional[str]:
     """Return an error message if the path escapes ALLOWED_BASE_DIR, else None."""
     real_path = os.path.realpath(file_path)
-    if not real_path.startswith(os.path.realpath(ALLOWED_BASE_DIR)):
+    if not _is_within(ALLOWED_BASE_DIR, real_path):
         return "File path not in allowed directory"
     if not os.path.exists(real_path) or not os.path.isfile(real_path):
         return "File not found: %s" % file_path
@@ -131,10 +167,11 @@ def extract_text_from_pdf(pdf_path: str) -> Dict[str, Any]:
 
 def extract_text_from_file(file_path: str) -> Dict[str, Any]:
     """Extract text from a file based on its extension. Uses safe paths only."""
-    # Validate path is within allowed directory
-    real_path = os.path.realpath(file_path)
-    if not real_path.startswith(os.path.realpath(ALLOWED_BASE_DIR)):
-        return {"error": "File path not in allowed directory"}
+    # One gate for every extractor: this duplicated the containment check that
+    # _require_allowed_path already performs.
+    err = _require_allowed_path(file_path)
+    if err:
+        return {"error": err}
     ext = file_path.rsplit(".", 1)[-1].lower() if "." in file_path else ""
     if ext == "pdf":
         return extract_text_from_pdf(file_path)

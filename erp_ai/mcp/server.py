@@ -2,6 +2,8 @@ import json
 
 import frappe
 
+from erp_ai.rbac import apply_department_filters, record_outside_department_scope
+
 # ---------------------------------------------------------------------------
 # Phase 1 security guardrails for the internal FrappeMCP tool layer.
 #
@@ -13,6 +15,8 @@ import frappe
 #   * only an allowlist of business DocTypes is accepted
 #   * security/system DocTypes are always denied
 #   * every operation enforces frappe.has_permission() instead of bypassing it
+#   * reads go through frappe.get_list(), so the row-level filters from User
+#     Permissions (company, warehouse, item, ...) apply as well
 #   * create/update no longer use ignore_permissions=True
 # Phase 3: commits removed from low-level tools — callers are responsible
 # for committing at the workflow boundary (see draft_workflow.create_document_from_draft).
@@ -40,12 +44,15 @@ ALLOWED_DOCTYPES = {
     "Quality Inspection",
     # Maintenance / Assets
     "Asset", "Asset Category", "Asset Maintenance", "Asset Repair", "Asset Movement",
-    # HR
-    "Employee", "Leave Application", "Attendance", "Payroll Entry",
-    "Salary Structure", "Expense Claim",
     # Projects
     "Project", "Task", "Timesheet",
 }
+
+# Note (audit point 9): HR/personnel DocTypes (Employee, Leave Application,
+# Attendance, Payroll Entry, Salary Structure, Expense Claim) are deliberately
+# NOT in this allowlist — they carry PII and are not part of the assistant's
+# document surface. The draft schema layer (erp_ai.schema) still knows them
+# for structured flows; live access via the MCP layer is denied by default.
 
 # Explicitly denied: never read/create/update/submit these via the assistant.
 BLOCKED_DOCTYPES = {
@@ -82,13 +89,43 @@ def _require_permission(doctype, action):
     return None
 
 
+def _require_doc_permission(doctype, name, action):
+    """Gate by-name document access: doctype-level AND document-level check.
+
+    The doctype-level check in ``_require_permission`` passes a user who holds
+    the role even when a User Permission (company, warehouse, item, ...)
+    excludes the specific document, and fetching by name with
+    ``frappe.get_doc`` applies no row filters. Without the second,
+    document-level ``frappe.has_permission(doc=...)`` call the user could
+    read/update/submit any document by guessing its name. Returns
+    ``(error_message, doc)``; exactly one of the two is not None.
+    """
+    err = _validate_doctype(doctype) or _require_permission(doctype, action)
+    if err:
+        return err, None
+    if not frappe.db.exists(doctype, name):
+        return f"{doctype} '{name}' not found", None
+    doc = frappe.get_doc(doctype, name)
+    # Department scope (audit point 19): a User Permission row filter does not
+    # reach a by-name fetch, and the app's own warehouse/company restrictions
+    # must hold on by-name reads just as they do on queries.
+    if record_outside_department_scope(frappe.session.user, doctype, doc):
+        return f"Not permitted to {action} {doctype} '{name}'", None
+    try:
+        if not frappe.has_permission(doctype, action, doc=doc, user=frappe.session.user):
+            return f"Not permitted to {action} {doctype} '{name}'", None
+    except Exception:
+        return f"Not permitted to {action} {doctype} '{name}'", None
+    return None, doc
+
+
 # Keys the model/assistant must never be able to write directly. The server
 # decides the DocType from the tool argument and the framework manages
 # identity, timestamps, status, docstatus and parent links.
 _BLOCKED_PAYLOAD_KEYS = frozenset({
     "doctype", "name", "creation", "modified", "modified_by", "idx",
     "docstatus", "owner", "parent", "parentfield", "parenttype",
-    "old_parent", "amended_from",
+    "old_parent", "amended_from", "naming_series",
 })
 
 
@@ -135,6 +172,15 @@ def _validate_required_fields(doctype, data):
         val = data.get(df.fieldname) if isinstance(data, dict) else None
         if val in (None, "", []) and not getattr(df, "default", None):
             missing.append(df.label or df.fieldname)
+    # Required child tables must be present and non-empty; row-level mandatory
+    # fields are left to insert(), because many of them (item_name, uom,
+    # rates) are reqd in meta but auto-filled from the item/price list at
+    # save time — flagging them here would reject payloads the framework
+    # would happily complete.
+    for df in meta.fields:
+        if df.fieldtype == "Table" and getattr(df, "reqd", 0):
+            if not (isinstance(data, dict) and data.get(df.fieldname)):
+                missing.append(df.label or df.fieldname)
     if missing:
         return "Missing required fields: " + ", ".join(missing)
     return None
@@ -153,7 +199,8 @@ class FrappeMCP:
             {"name": "print_document", "description": "Get print URL for a document (read-permission enforced)", "inputSchema": {"type": "object", "properties": {"doctype": {"type": "string"}, "name": {"type": "string"}, "format": {"type": "string"}}, "required": ["doctype", "name"]}},
             {"name": "search_documents", "description": "Search documents by text (read-permission enforced per DocType)", "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}, "doctype": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["query"]}},
             {"name": "get_doctype_meta", "description": "Get doctype fields and structure (read-permission enforced)", "inputSchema": {"type": "object", "properties": {"doctype": {"type": "string"}}, "required": ["doctype"]}},
-            {"name": "submit_document", "description": "Submit a draft document (submit-permission enforced)", "inputSchema": {"type": "object", "properties": {"doctype": {"type": "string"}, "name": {"type": "string"}}, "required": ["doctype", "name"]}}
+            {"name": "submit_document", "description": "Submit a draft document (submit-permission enforced)", "inputSchema": {"type": "object", "properties": {"doctype": {"type": "string"}, "name": {"type": "string"}}, "required": ["doctype", "name"]}},
+            {"name": "get_workspace", "description": "Get workspace details including shortcuts, links, and content blocks", "inputSchema": {"type": "object", "properties": {"workspace_name": {"type": "string"}}, "required": []}}
         ]
 
     def call_tool(self, name, args):
@@ -186,16 +233,19 @@ class FrappeMCP:
             order_by = "modified desc"
         if filters:
             filters = {k: v for k, v in filters.items() if k in allowed_fields}
-        records = frappe.get_all(doctype, filters=filters or {}, fields=fields, limit_page_length=limit, order_by=order_by)
+        # Department scope enforcement (audit point 19): the app's warehouse/
+        # company restrictions are ANDed into the query filters, so a
+        # restricted role cannot list rows outside their scope here either.
+        filters = apply_department_filters(
+            frappe.session.user, doctype, filters or {})
+        records = frappe.get_list(doctype, filters=filters, fields=fields, limit_page_length=limit, order_by=order_by)
         return {"doctype": doctype, "count": len(records), "records": records}
 
     def tool_get_document(self, doctype, name):
-        err = _validate_doctype(doctype) or _require_permission(doctype, "read")
+        err, doc = _require_doc_permission(doctype, name, "read")
         if err:
             return {"error": err}
-        if not frappe.db.exists(doctype, name):
-            return {"error": f"{doctype} '{name}' not found"}
-        return frappe.get_doc(doctype, name).as_dict()
+        return doc.as_dict()
 
     def tool_create_document(self, doctype, data, idempotency_key=None):
         err = _validate_doctype(doctype) or _require_permission(doctype, "create")
@@ -251,28 +301,36 @@ class FrappeMCP:
             return {"error": f"Failed to create {doctype}: {str(e)}"}
 
     def tool_update_document(self, doctype, name, data):
-        err = _validate_doctype(doctype) or _require_permission(doctype, "write")
+        err, doc = _require_doc_permission(doctype, name, "write")
         if err:
             return {"error": err}
-        if not frappe.db.exists(doctype, name):
-            return {"error": f"{doctype} '{name}' not found"}
         data = _sanitize_write_payload(data)
         if not data:
             return {"error": "No writable fields provided"}
         try:
-            doc = frappe.get_doc(doctype, name)
             doc.update(data)
-            doc.save()  # permissions enforced (was ignore_permissions=True)
+            doc.save()  # permissions enforced again at the framework layer
             return {"success": True, "doctype": doctype, "name": doc.name, "message": f"{doctype} '{doc.name}' updated"}
         except Exception as e:
             frappe.log_error("erp_ai.mcp.update_document", str(e))
             return {"error": str(e)}
 
     def tool_print_document(self, doctype, name, format="Standard"):
-        err = _validate_doctype(doctype) or _require_permission(doctype, "read")
+        err, doc = _require_doc_permission(doctype, name, "read")
         if err:
             return {"error": err}
-        url = f"/api/method/frappe.utils.print_format.download_pdf?doctype={doctype}&name={name}&format={format}&no_letterhead=0&_lang=en"
+        # Print format must be the doctype's default or actually exist for this
+        # DocType — rejects typos and query injection via `format`.
+        if format != "Standard" and not frappe.db.exists(
+            "Print Format", {"name": format, "doc_type": doctype}
+        ):
+            return {"error": f"Print Format '{format}' not found for {doctype}"}
+        from urllib.parse import urlencode
+
+        url = "/api/method/frappe.utils.print_format.download_pdf?" + urlencode({
+            "doctype": doctype, "name": name, "format": format,
+            "no_letterhead": 0, "_lang": "en",
+        })
         return {"doctype": doctype, "name": name, "print_url": url, "message": f"Print URL: {url}"}
 
     def tool_search_documents(self, query, doctype=None, limit=10):
@@ -282,12 +340,16 @@ class FrappeMCP:
             err = _validate_doctype(doctype) or _require_permission(doctype, "read")
             if err:
                 return {"error": err}
-            records = frappe.get_all(doctype, filters={"name": ["like", f"%{query}%"]}, limit_page_length=limit)
+            filters = apply_department_filters(
+                frappe.session.user, doctype, {"name": ["like", f"%{query}%"]})
+            records = frappe.get_list(doctype, filters=filters, limit_page_length=limit)
             results = [{"doctype": doctype, "name": r["name"]} for r in records]
         else:
             for dt in ["Item", "Customer", "Supplier", "Sales Invoice", "Purchase Invoice"]:
                 if not _require_permission(dt, "read"):
-                    records = frappe.get_all(dt, filters={"name": ["like", f"%{query}%"]}, limit_page_length=5)
+                    filters = apply_department_filters(
+                        frappe.session.user, dt, {"name": ["like", f"%{query}%"]})
+                    records = frappe.get_list(dt, filters=filters, limit_page_length=5)
                     results.extend([{"doctype": dt, "name": r["name"]} for r in records])
         return {"query": query, "results": results[:limit]}
 
@@ -300,13 +362,10 @@ class FrappeMCP:
         return {"doctype": doctype, "fields": fields}
 
     def tool_submit_document(self, doctype, name):
-        err = _validate_doctype(doctype) or _require_permission(doctype, "submit")
+        err, doc = _require_doc_permission(doctype, name, "submit")
         if err:
             return {"error": err}
-        if not frappe.db.exists(doctype, name):
-            return {"error": f"{doctype} '{name}' not found"}
         try:
-            doc = frappe.get_doc(doctype, name)
             if doc.docstatus == 0:
                 doc.submit()  # enforces submit permission (was unchecked)
                 return {"success": True, "message": f"{doctype} '{name}' submitted"}
@@ -314,3 +373,48 @@ class FrappeMCP:
         except Exception as e:
             frappe.log_error("erp_ai.mcp.submit_document", str(e))
             return {"error": str(e)}
+
+    def tool_get_workspace(self, workspace_name="AI Assistant Hub"):
+        """Get workspace details including shortcuts, links, and content blocks.
+
+        Args:
+            workspace_name: Name of the workspace to inspect (default: "AI Assistant Hub")
+
+        Returns:
+            Dictionary with workspace details including shortcuts count and list
+        """
+        if "System Manager" not in (frappe.get_roles() or []):
+            return {"error": "Only System Managers can inspect workspaces"}
+        if not frappe.db.exists("Workspace", workspace_name):
+            return {"error": f"Workspace '{workspace_name}' not found"}
+
+        ws = frappe.get_doc("Workspace", workspace_name)
+
+        result = {
+            "name": ws.name,
+            "title": ws.title,
+            "label": ws.label,
+            "public": ws.public,
+            "for_user": ws.for_user,
+            "shortcuts_count": len(ws.shortcuts),
+            "shortcuts": [],
+            "links_count": len(ws.links),
+            "content_blocks_count": len(frappe.parse_json(ws.content)) if ws.content else 0,
+            "number_cards_count": len(ws.number_cards),
+        }
+
+        # Add shortcuts details
+        for s in ws.shortcuts:
+            shortcut_data = {
+                "label": s.label,
+                "type": s.type,
+                "link_to": s.link_to,
+            }
+            if hasattr(s, "doc_view") and s.doc_view:
+                shortcut_data["doc_view"] = s.doc_view
+            if hasattr(s, "link_type") and s.link_type:
+                shortcut_data["link_type"] = s.link_type
+            result["shortcuts"].append(shortcut_data)
+
+        return result
+

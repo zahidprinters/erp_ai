@@ -1,33 +1,313 @@
 {
- "charts": [],
- "content": "[{\"id\": \"ai_welcome\", \"type\": \"header\", \"data\": {\"text\": \"\\ud83e\\udd16 AI Assistant Hub\", \"col\": 12}}, {\"id\": \"ai_text\", \"type\": \"paragraph\", \"data\": {\"text\": \"Ask anything about ERPNext, Frappe framework, your custom apps or ERP data. Chat with your private AI assistant \\u2014 ask about counts, customers, or how-to steps. Voice input supported (\\ud83c\\udfa4 button in chat).\", \"col\": 12}}, {\"id\": \"ai_placeholder\", \"type\": \"paragraph\", \"data\": {\"text\": \"\\ud83d\\udcac Live AI chat is loading below... (ask by typing or \\ud83c\\udfa4 voice)\", \"col\": 12}}, {\"id\": \"ai_help_header\", \"type\": \"header\", \"data\": {\"text\": \"\\u2753 How to use the AI Assistant\", \"col\": 12}}, {\"id\": \"ai_help_basics\", \"type\": \"paragraph\", \"data\": {\"text\": \"\\ud83d\\udcca DATA QUERIES \\u2014 ask anything about your ERP data: \\u2018How many items?\\u2019 \\u2022 \\u2018How many customers?\\u2019 \\u2022 \\u2018Total stock?\\u2019 \\u2022 \\u2018Unpaid invoices?\\u2019 \\u2022 \\u2018Show me all items\\u2019 \\u2022 \\u2018Search for pump springs\\u2019 \\u2014 the AI answers with REAL numbers from your database.\", \"col\": 12}}, {\"id\": \"ai_help_workflows\", \"type\": \"paragraph\", \"data\": {\"text\": \"\\ud83d\\udce6 WORKFLOWS \\u2014 create documents in plain language: \\u2018Spring shipment arrived from ABC Traders, vehicle LEA-4521, 500 pcs pump springs\\u2019 (records goods receipt) \\u2022 \\u2018Issue 10 pump springs to Engr Ali in Production\\u2019 (stock issue) \\u2022 \\u2018Make invoice for ABC Traders, 2 pump springs @ 500\\u2019 (sales invoice + print link) \\u2022 \\u2018Create item named Steel Rod price 100\\u2019 \\u2022 \\u2018Create customer named XYZ Corp\\u2019. The AI asks for any missing details, creates documents as DRAFT for your review, and gives print/PDF links.\", \"col\": 12}}, {\"id\": \"ai_help_setup\", \"type\": \"paragraph\", \"data\": {\"text\": \"\\ud83d\\udee0 SETUP & GUIDANCE \\u2014 ask how-to questions: \\u2018How do I set up a new warehouse?\\u2019 \\u2022 \\u2018What do I need to make a sales invoice?\\u2019 \\u2022 \\u2018How does the manufacturing BOM work?\\u2019 \\u2022 \\u2018Help me set up a new ERP system\\u2019 \\u2022 \\u2018What taxes apply in Pakistan?\\u2019 \\u2014 full ERPNext knowledge built in.\", \"col\": 12}}, {\"id\": \"ai_help_voice\", \"type\": \"paragraph\", \"data\": {\"text\": \"\\ud83c\\udfa4 VOICE \\u2014 click \\ud83c\\udfa4 in the chat, speak, stop \\u2014 your words are typed into the input (needs HTTPS). \\ud83d\\udd0a/\\ud83d\\udd07 button toggles spoken answers (Piper TTS, English & Urdu). Voice works on https://spi.local or localhost.\", \"col\": 12}}, {\"id\": \"ai_help_docs\", \"type\": \"paragraph\", \"data\": {\"text\": \"\\ud83d\\udcda FULL DOCS: see README.md in the erp_ai app folder for complete API reference, setup, troubleshooting and debugging guide.\", \"col\": 12}}]",
- "creation": "2026-09-07 13:18:44.728275",
- "custom_blocks": [],
- "docstatus": 0,
- "doctype": "Workspace",
- "hide_custom": 0,
- "idx": 0,
- "indicator_color": "green",
- "is_hidden": 0,
- "label": "AI Assistant Hub",
- "links": [],
- "modified": "2026-09-08 13:29:37.471019",
- "modified_by": "Administrator",
- "module": "ERP AI",
- "name": "AI Assistant Hub",
- "number_cards": [],
- "owner": "Administrator",
- "public": 1,
- "quick_lists": [],
- "roles": [],
- "sequence_id": 1.0,
- "shortcuts": [
-  {
-   "doc_view": "",
-   "label": "Open AI Chat",
-   "link_to": "ai-assistant",
-   "type": "Page"
-  }
- ],
- "title": "AI Assistant Hub"
+  "charts": [],
+  "content": "[{\"id\": \"ai_header\", \"type\": \"header\", \"data\": {\"text\": \"\\ud83e\\udd16 ERP AI Assistant\", \"col\": 12}}, {\"id\": \"ai_sub\", \"type\": \"paragraph\", \"data\": {\"text\": \"Chat with AI, create documents, query data, and get help \\u2014 all in one place.\", \"col\": 12}}, {\"id\": \"ai_chat_header\", \"type\": \"header\", \"data\": {\"text\": \"\\ud83d\\udcac AI Chat\", \"col\": 12}}, {\"id\": \"ai_chat_desc\", \"type\": \"paragraph\", \"data\": {\"text\": \"Voice and text natural-language chat for ERP operations.\", \"col\": 6}}, {\"id\": \"quick_header\", \"type\": \"header\", \"data\": {\"text\": \"\\u26a1 Quick Actions\", \"col\": 12}}, {\"id\": \"shortcut_dees7iv6d1\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"\\ud83d\\udcac AI Chat\"}, \"col\": 3}, {\"id\": \"shortcut_deeq5pthm0\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"\\ud83c\\udfa4 Voice Chat\"}, \"col\": 3}, {\"id\": \"shortcut_deethmuhf1\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Sales Invoice\"}, \"col\": 3}, {\"id\": \"shortcut_deeoorq1rv\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Purchase Receipt\"}, \"col\": 3}, {\"id\": \"shortcut_deepapmuqv\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Stock Entry\"}, \"col\": 3}, {\"id\": \"shortcut_dee9ku319p\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Item\"}, \"col\": 3}, {\"id\": \"shortcut_deeq5snu2j\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Browse Help Articles\"}, \"col\": 3}, {\"id\": \"shortcut_deescb5mf5\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Search Help\"}, \"col\": 3}, {\"id\": \"shortcut_dee99qa20q\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"AI Audit Trail\"}, \"col\": 3}, {\"id\": \"shortcut_dee9a8x7k2\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"\\u2699\\ufe0f AI Settings\", \"shortcut_url\": \"/app/ai-settings\"}, \"col\": 3}, {\"id\": \"shortcut_voice_toggle_01\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"\\ud83d\\udd07 Voice Toggle\", \"shortcut_url\": \"/app/ai-assistant\"}, \"col\": 3}]",
+  "creation": "2026-09-07 13:18:44.728275",
+  "custom_blocks": [],
+  "docstatus": 0,
+  "doctype": "Workspace",
+  "hide_custom": 0,
+  "indicator_color": "green",
+  "is_hidden": 0,
+  "label": "AI Assistant Hub",
+  "links": [
+    {
+      "type": "Card Break",
+      "label": "AI Operations",
+      "description": "Chat, approvals, help, and AI activity.",
+      "icon": "sparkles"
+    },
+    {
+      "type": "Link",
+      "label": "AI Settings",
+      "link_type": "Page",
+      "link_to": "ai-settings",
+      "icon": "settings"
+    },
+    {
+      "type": "Link",
+      "label": "AI Assistant",
+      "link_type": "Page",
+      "link_to": "ai-assistant"
+    },
+    {
+      "type": "Link",
+      "label": "AI Help Articles",
+      "link_type": "DocType",
+      "link_to": "AI Help Article"
+    },
+    {
+      "type": "Link",
+      "label": "AI Audit Trail",
+      "link_type": "DocType",
+      "link_to": "AI Assistant Action"
+    },
+    {
+      "type": "Card Break",
+      "label": "Selling & Buying",
+      "description": "Customers, suppliers, orders, receipts, and invoices.",
+      "icon": "shopping-cart"
+    },
+    {
+      "type": "Link",
+      "label": "Customers",
+      "link_type": "DocType",
+      "link_to": "Customer"
+    },
+    {
+      "type": "Link",
+      "label": "Suppliers",
+      "link_type": "DocType",
+      "link_to": "Supplier"
+    },
+    {
+      "type": "Link",
+      "label": "Sales Orders",
+      "link_type": "DocType",
+      "link_to": "Sales Order"
+    },
+    {
+      "type": "Link",
+      "label": "Sales Invoices",
+      "link_type": "DocType",
+      "link_to": "Sales Invoice"
+    },
+    {
+      "type": "Link",
+      "label": "Purchase Orders",
+      "link_type": "DocType",
+      "link_to": "Purchase Order"
+    },
+    {
+      "type": "Link",
+      "label": "Purchase Receipts",
+      "link_type": "DocType",
+      "link_to": "Purchase Receipt"
+    },
+    {
+      "type": "Link",
+      "label": "Purchase Invoices",
+      "link_type": "DocType",
+      "link_to": "Purchase Invoice"
+    },
+    {
+      "type": "Card Break",
+      "label": "Stock & Production",
+      "description": "Items, warehouses, stock movement, and manufacturing.",
+      "icon": "box"
+    },
+    {
+      "type": "Link",
+      "label": "Items",
+      "link_type": "DocType",
+      "link_to": "Item"
+    },
+    {
+      "type": "Link",
+      "label": "Warehouses",
+      "link_type": "DocType",
+      "link_to": "Warehouse"
+    },
+    {
+      "type": "Link",
+      "label": "Stock Entries",
+      "link_type": "DocType",
+      "link_to": "Stock Entry"
+    },
+    {
+      "type": "Link",
+      "label": "Material Requests",
+      "link_type": "DocType",
+      "link_to": "Material Request"
+    },
+    {
+      "type": "Link",
+      "label": "BOMs",
+      "link_type": "DocType",
+      "link_to": "BOM"
+    },
+    {
+      "type": "Link",
+      "label": "Work Orders",
+      "link_type": "DocType",
+      "link_to": "Work Order"
+    },
+    {
+      "type": "Card Break",
+      "label": "Quality & Maintenance",
+      "description": "Inspections, assets, repairs, and maintenance work.",
+      "icon": "tool"
+    },
+    {
+      "type": "Link",
+      "label": "Quality Inspections",
+      "link_type": "DocType",
+      "link_to": "Quality Inspection"
+    },
+    {
+      "type": "Link",
+      "label": "Assets",
+      "link_type": "DocType",
+      "link_to": "Asset"
+    },
+    {
+      "type": "Link",
+      "label": "Asset Maintenance",
+      "link_type": "DocType",
+      "link_to": "Asset Maintenance"
+    },
+    {
+      "type": "Link",
+      "label": "Asset Repairs",
+      "link_type": "DocType",
+      "link_to": "Asset Repair"
+    },
+    {
+      "type": "Card Break",
+      "label": "People & Projects",
+      "description": "Employees, leave, projects, tasks, and timesheets.",
+      "icon": "users"
+    },
+    {
+      "type": "Link",
+      "label": "Employees",
+      "link_type": "DocType",
+      "link_to": "Employee"
+    },
+    {
+      "type": "Link",
+      "label": "Leave Applications",
+      "link_type": "DocType",
+      "link_to": "Leave Application"
+    },
+    {
+      "type": "Link",
+      "label": "Projects",
+      "link_type": "DocType",
+      "link_to": "Project"
+    },
+    {
+      "type": "Link",
+      "label": "Tasks",
+      "link_type": "DocType",
+      "link_to": "Task"
+    },
+    {
+      "type": "Link",
+      "label": "Timesheets",
+      "link_type": "DocType",
+      "link_to": "Timesheet"
+    },
+    {
+      "type": "Card Break",
+      "label": "Finance & Administration",
+      "description": "Payments, journals, companies, and system configuration.",
+      "icon": "briefcase"
+    },
+    {
+      "type": "Link",
+      "label": "Payment Entries",
+      "link_type": "DocType",
+      "link_to": "Payment Entry"
+    },
+    {
+      "type": "Link",
+      "label": "Journal Entries",
+      "link_type": "DocType",
+      "link_to": "Journal Entry"
+    },
+    {
+      "type": "Link",
+      "label": "Companies",
+      "link_type": "DocType",
+      "link_to": "Company"
+    },
+    {
+      "type": "Link",
+      "label": "AI Settings",
+      "link_type": "DocType",
+      "link_to": "AI Settings",
+      "dependencies": "erp_ai"
+    }
+  ],
+  "modified": "2026-09-12 14:00:00",
+  "modified_by": "Administrator",
+  "module": "ERP AI",
+  "name": "AI Assistant Hub",
+  "number_cards": [
+    {
+      "number_card_name": "Active Items",
+      "label": "Active Items"
+    },
+    {
+      "number_card_name": "Customers",
+      "label": "Customers"
+    },
+    {
+      "number_card_name": "Suppliers",
+      "label": "Suppliers"
+    },
+    {
+      "number_card_name": "Open Sales Orders",
+      "label": "Open Sales Orders"
+    }
+  ],
+  "owner": "Administrator",
+  "public": 1,
+  "quick_lists": [],
+  "roles": [],
+  "sequence_id": 1.0,
+  "shortcuts": [
+    {
+      "label": "\ud83d\udcac AI Chat",
+      "link_to": "ai-assistant",
+      "type": "Page"
+    },
+    {
+      "label": "\ud83c\udfa4 Voice Chat",
+      "link_to": "ai-assistant",
+      "type": "Page"
+    },
+    {
+      "label": "Sales Invoice",
+      "link_to": "Sales Invoice",
+      "type": "DocType",
+      "doc_view": "List"
+    },
+    {
+      "label": "Purchase Receipt",
+      "link_to": "Purchase Receipt",
+      "type": "DocType",
+      "doc_view": "List"
+    },
+    {
+      "label": "Stock Entry",
+      "link_to": "Stock Entry",
+      "type": "DocType",
+      "doc_view": "List"
+    },
+    {
+      "label": "Item",
+      "link_to": "Item",
+      "type": "DocType",
+      "doc_view": "List"
+    },
+    {
+      "label": "Browse Help Articles",
+      "link_to": "AI Help Article",
+      "type": "DocType",
+      "doc_view": "List"
+    },
+    {
+      "label": "Search Help",
+      "link_to": "ai-assistant",
+      "type": "Page"
+    },
+    {
+      "label": "AI Audit Trail",
+      "link_to": "AI Assistant Action",
+      "type": "DocType",
+      "doc_view": "List"
+    }
+  ],
+  "title": "AI Assistant Hub"
 }
