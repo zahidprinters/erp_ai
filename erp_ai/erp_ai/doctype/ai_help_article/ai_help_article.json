@@ -1,0 +1,141 @@
+{
+ "actions": [],
+ "allow_import": 1,
+ "allow_rename": 1,
+ "autoname": "format:{category}-{title}-{####}",
+ "creation": "2026-09-12 00:00:00",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "title",
+  "category",
+  "icon",
+  "section_break_content",
+  "content",
+  "section_break_metadata",
+  "description",
+  "keywords",
+  "section_break_visibility",
+  "roles",
+  "is_active",
+  "section_break_examples",
+  "example_queries"
+ ],
+ "fields": [
+  {
+   "fieldname": "title",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Title",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "category",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Category",
+   "options": "Getting Started\nData Entry\nAccounting\nSelling\nBuying\nStock\nManufacturing\nHR & Payroll\nQuality\nAssets\nReports\nSetup\nTroubleshooting",
+   "reqd": 1
+  },
+  {
+   "fieldname": "icon",
+   "fieldtype": "Select",
+   "label": "Icon",
+   "options": "getting-started\naccounting\nselling\nbuying\nstock\nmanufacturing\nhr\nquality\nassets\nreports\nsetup\ntroubleshooting\nhelp\ninfo\ncheck\ntool\nrocket\ngraph\nfile\ndollar\ncart\nbox\ngear\nuser\nshield\nmagnifier\nplus-circle\ntruck\nfile-text\narrow-up-right\nmic\nsettings\nhelp-circle\nstar\nheart\ncomment\nlist\nchart",
+   "default": "help"
+  },
+  {
+   "fieldname": "section_break_content",
+   "fieldtype": "Section Break",
+   "label": "Content"
+  },
+  {
+   "fieldname": "content",
+   "fieldtype": "Long Text",
+   "label": "Article Content (Markdown supported)",
+   "reqd": 1
+  },
+  {
+   "fieldname": "section_break_metadata",
+   "fieldtype": "Section Break",
+   "label": "Metadata"
+  },
+  {
+   "description": "Short summary shown in search results",
+   "fieldname": "description",
+   "fieldtype": "Small Text",
+   "label": "Short Description"
+  },
+  {
+   "description": "Comma-separated keywords for search",
+   "fieldname": "keywords",
+   "fieldtype": "Small Text",
+   "label": "Keywords"
+  },
+  {
+   "fieldname": "section_break_visibility",
+   "fieldtype": "Section Break",
+   "label": "Visibility"
+  },
+  {
+   "description": "Comma-separated list of roles allowed to see this article (empty = all)",
+   "fieldname": "roles",
+   "fieldtype": "Small Text",
+   "label": "Visible To Roles"
+  },
+  {
+   "default": "1",
+   "fieldname": "is_active",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Is Active"
+  },
+  {
+   "fieldname": "section_break_examples",
+   "fieldtype": "Section Break",
+   "label": "Example Queries"
+  },
+  {
+   "description": "Example chat queries that trigger this help (one per line)",
+   "fieldname": "example_queries",
+   "fieldtype": "Long Text",
+   "label": "Example Queries"
+  }
+ ],
+ "hide_toolbar": 0,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-09-12 00:00:00",
+ "modified_by": "Administrator",
+ "module": "ERP AI",
+ "name": "AI Help Article",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "read": 1,
+   "role": "All"
+  }
+ ],
+ "show_title_field_in_link": 1,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "title",
+ "track_changes": 1
+}

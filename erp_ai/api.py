@@ -7,12 +7,16 @@
 #   conversation/ mcp/ knowledge/
 # ---------------------------------------------------------------------------
 import json
+import os
 import re
+from typing import Any, Dict, List, Optional
 
 import frappe
 import requests
+from frappe import _
 from frappe.utils import fmt_money
 
+from erp_ai.audit import log_error_safely
 from erp_ai.conversation import (
     OPTIONAL_FOLLOWUPS,
     clear_guided,
@@ -31,7 +35,6 @@ from erp_ai.draft_workflow import (
     get_draft,
     get_missing_fields,
     get_missing_labels,
-    save_draft,
 )
 from erp_ai.handlers import (
     handle_count_query,
@@ -41,11 +44,9 @@ from erp_ai.handlers import (
     handle_print,
 )
 from erp_ai.handlers.formatters import format_document_view
-from erp_ai.intents import detect_intent
 from erp_ai.knowledge.erpnext_kb import get_kb_summary, get_knowledge_excerpt
-from erp_ai.llm import AI_ALLOWED_MODELS, DEFAULT_MODEL, _allowed_model, ask_ollama
+from erp_ai.llm import ask_llm, ask_ollama
 from erp_ai.mcp.server import FrappeMCP
-from erp_ai.reports import detect_report
 from erp_ai.safety import check_illegal_operation
 from erp_ai.schema import DOCTYPE_SCHEMAS, get_all_doctypes, get_schema
 from erp_ai.voice import text_to_speech, voice_to_text
@@ -61,7 +62,7 @@ def chat(prompt, model=None):
     """Simple AI chat."""
     if not prompt:
         frappe.throw("prompt is required")
-    return {"response": ask_ollama(prompt)}
+    return {"response": ask_llm(prompt, model=model)}
 
 
 # ---------------------------------------------------------------------------
@@ -113,16 +114,39 @@ def _plural(n, word):
     return word
 
 
-def _count(dt, filters=None):
+def _aggregate(dt, expr, filters=None):
+    """Return one aggregate over `dt`, honouring the caller's read scope.
+
+    ``frappe.db.count`` and raw SQL apply no permissions at all — neither the
+    role check nor the ``permission_query_conditions``/User Permission filters
+    (company, warehouse, item, cost centre, ...) take part in the query, so a
+    restricted user gets totals for rows they may not read.
+
+    Delegates to ``erp_ai.erp_tools._fetch`` — the one validated ``get_list``
+    read path — instead of building its own ``frappe.get_list`` call, so the
+    aggregate can never drift from the row-level read (audit point 11: one
+    helper per concern). Returns None when the user may not read `dt` or the
+    query fails.
+    """
+    from erp_ai.erp_tools import _fetch
+
     if not frappe.has_permission(dt, "read"):
         return None
     try:
-        return frappe.db.count(dt, filters=filters)
+        rows = _fetch(dt, filters=filters or {}, fields=[f"{expr} as total"],
+                      limit_page_length=0)
     except Exception:
-        try:
-            return frappe.db.count(dt)
-        except Exception:
-            return None
+        return None
+    return rows[0].get("total") if rows else None
+
+
+def _count(dt, filters=None):
+    """Permission-aware count. Returns None when the caller may not read `dt`
+    or the filtered query fails (e.g. an invalid filter field) — it must never
+    fall back to an unfiltered count, which would leak totals outside the
+    caller's row-level scope."""
+    total = _aggregate(dt, "count(name)", filters)
+    return None if total is None else int(total)
 
 
 def _run_intent(it):
@@ -131,17 +155,14 @@ def _run_intent(it):
         if kind == "bin_sum":
             if not frappe.has_permission("Bin", "read"):
                 return {"ok": False}
-            # NOTE: DocType-level check only; User Permissions (warehouse/company)
-            # are not enforced at the SQL level. For restricted users, consider
-            # filtering via frappe.get_all("Bin") with permission_query_conditions.
-            n = frappe.db.sql("SELECT COALESCE(SUM(actual_qty),0) FROM tabBin")[0][0]
+            n = _aggregate("Bin", "sum(actual_qty)") or 0
             return {"ok": True, "answer": f"Total stock: {_num(n)} units."}
         if kind == "si_unpaid":
             if not frappe.has_permission("Sales Invoice", "read"):
                 return {"ok": False}
-            # NOTE: Same as above — DocType check only, not User Permissions.
-            cnt = frappe.db.count("Sales Invoice", {"docstatus": 1, "outstanding_amount": [">", 0]})
-            amt = frappe.db.sql("SELECT COALESCE(SUM(outstanding_amount),0) FROM tabSales Invoice WHERE docstatus=1 AND outstanding_amount>0")[0][0]
+            unpaid = {"docstatus": 1, "outstanding_amount": [">", 0]}
+            cnt = int(_aggregate("Sales Invoice", "count(name)", unpaid) or 0)
+            amt = _aggregate("Sales Invoice", "sum(outstanding_amount)", unpaid) or 0
             try:
                 cur = frappe.db.get_single_value("Global Defaults", "default_currency")
                 money = fmt_money(amt, currency=cur)
@@ -195,7 +216,7 @@ def _resolve(doctype, name):
         if meta.has_field("customer_name"):
             candidates.append("customer_name")
         for f in candidates:
-            hits = frappe.get_all(doctype, filters={f: ["like", f"%{name}%"]}, limit_page_length=1, pluck="name")
+            hits = frappe.get_list(doctype, filters={f: ["like", f"%{name}%"]}, limit_page_length=1, pluck="name")
             if hits:
                 return frappe.get_doc(doctype, hits[0])
         raise
@@ -209,7 +230,7 @@ def summarize_doc(doctype, name):
     fields = {df.fieldname: getattr(doc, df.fieldname) for df in doc.meta.fields if getattr(doc, df.fieldname, None) not in (None, "")}
     data = json.dumps(fields, default=str)[:6000]
     prompt = f"You are an ERP assistant. Summarize this ERPNext {doctype} in 3 short bullet points:\n{data}"
-    return {"summary": ask_ollama(prompt)}
+    return {"summary": ask_llm(prompt)}
 
 
 @frappe.whitelist()
@@ -221,17 +242,22 @@ def draft_email(purpose, recipient=None, doctype=None, name=None):
         doc.check_permission("read")
         ctx = json.dumps({df.fieldname: getattr(doc, df.fieldname) for df in doc.meta.fields if getattr(doc, df.fieldname, None) not in (None, "")}, default=str)[:4000]
     prompt = f"Draft a professional business email. Purpose: {purpose}. Recipient: {recipient or 'Customer'}. Context: {ctx}. Include a Subject line. Keep it under 150 words."
-    return {"email": ask_ollama(prompt)}
+    return {"email": ask_llm(prompt)}
 
 
 # ---------------------------------------------------------------------------
 # Desk assistant with memory
 # ---------------------------------------------------------------------------
-@frappe.whitelist()
-def ask(prompt, session=None, model=None):
-    """Desk AI assistant with saved memory + Frappe-aware context."""
-    if not prompt:
-        frappe.throw("prompt is required")
+def _assistant_reply(prompt, session=None, model=None):
+    """Shared core of the chat endpoints: deterministic data answers first,
+    then the configured LLM with session memory. Returns (reply, session).
+
+    Restores the pipeline that was gutted when the inline chat-dispatch
+    handlers (_handle_create_intent and friends) were removed in favour of
+    the draft -> confirm endpoints: the create/submit flows now live in
+    their own whitelisted endpoints and the guided conversation, so the chat
+    surface answers questions and points users at those flows.
+    """
     session = session or frappe.generate_hash(length=10)
     user = frappe.session.user
     apps = ", ".join(frappe.get_installed_apps())
@@ -246,222 +272,63 @@ def ask(prompt, session=None, model=None):
                              fields=["role", "content"], order_by="creation asc", limit_page_length=8)
     mem = "\n".join(f"{m.role}: {m.content}" for m in history)
     full_prompt = f"{system}\n\nConversation history:\n{mem}\n\nUser: {prompt}\nAssistant:"
-    reply = None
     data = _data_answer(prompt)
     if data.get("ok"):
-        reply = data["answer"]
-    if not reply:
-        reply = ask_ollama(full_prompt, model)
-    frappe.get_doc({"doctype": "AI Chat Message", "user": user, "session_id": session, "role": "user", "content": prompt}).insert()
-    frappe.get_doc({"doctype": "AI Chat Message", "user": user, "session_id": session, "role": "assistant", "content": reply}).insert()
+        return data["answer"], session
+    return ask_llm(full_prompt, model=model), session
+
+
+@frappe.whitelist()
+def ask(prompt, session=None, model=None):
+    """Desk AI assistant with saved memory + Frappe-aware context."""
+    if not prompt:
+        frappe.throw("prompt is required")
+    reply, _session = _assistant_reply(prompt, session, model)
+    return reply
+
+
+def ask_v2(prompt, session=None, model=None):
+    """Dict-returning chat variant ({response, session}) consumed by
+    ``ask_v2_with_voice`` and the Desk widget."""
+    if not prompt:
+        frappe.throw("prompt is required")
+    reply, session = _assistant_reply(prompt, session, model)
     return {"response": reply, "session": session}
 
 
 @frappe.whitelist()
-def ask_with_doc(doctype, name, prompt, session=None):
-    """Like ask() but injects the current document fields."""
+def ask_with_doc(doctype, name, prompt, session=None, model=None):
+    """Document-grounded chat variant used by the Desk widget on a form.
+
+    Grounds the answer on the document's readable fields; the caller still
+    needs read permission on the document.
+    """
     if not prompt:
         frappe.throw("prompt is required")
-    session = session or frappe.generate_hash(length=10)
-    user = frappe.session.user
     doc = _resolve(doctype, name)
     doc.check_permission("read")
-    fields = {df.fieldname: getattr(doc, df.fieldname) for df in doc.meta.fields if getattr(doc, df.fieldname, None) not in (None, "")}
-    data = json.dumps(fields, default=str)[:4000]
-    full_prompt = f"You are an ERP assistant. The user is looking at {doctype} '{name}'.\nDocument data:\n{data}\n\nUser question: {prompt}\nAnswer:"
-    reply = ask_ollama(full_prompt)
-    frappe.get_doc({"doctype": "AI Chat Message", "user": user, "session_id": session, "role": "user", "content": prompt}).insert()
-    frappe.get_doc({"doctype": "AI Chat Message", "user": user, "session_id": session, "role": "assistant", "content": reply}).insert()
-    return {"response": reply, "session": session}
+    fields = {
+        df.fieldname: getattr(doc, df.fieldname)
+        for df in doc.meta.fields
+        if getattr(doc, df.fieldname, None) not in (None, "")
+    }
+    ctx = json.dumps(fields, default=str)[:4000]
+    grounded = (
+        f"The user is looking at {doctype} '{name}'. Document data:\n{ctx}\n\n"
+        f"User question: {prompt}"
+    )
+    reply, session = _assistant_reply(grounded, session, model)
+    return {"response": reply, "session": session, "doctype": doctype, "docname": name}
 
 
-# ---------------------------------------------------------------------------
-# Voice endpoints
-# ---------------------------------------------------------------------------
-@frappe.whitelist()
-def voice_to_text_endpoint(audio, fmt="webm"):
-    """Convert audio (base64) to text."""
-    import base64
-    audio_bytes = base64.b64decode(audio) if audio else None
-    return voice_to_text(audio_bytes, fmt)
+def _process_with_mcp(prompt, session, user, model=None):
+    """Evaluation hook: answer through the real assistant core (read paths).
 
-
-@frappe.whitelist()
-def text_to_speech_endpoint(text, lang="en"):
-    """Convert text to speech audio URL."""
-    return text_to_speech(text, lang)
-
-
-# ---------------------------------------------------------------------------
-# Enhanced AI assistant with MCP tool access (ask_v2)
-# ---------------------------------------------------------------------------
-@frappe.whitelist()
-def ask_v2(prompt, session=None, model=None):
-    """Enhanced AI assistant with MCP tool access."""
-    if not prompt:
-        frappe.throw("prompt is required")
-    session = session or frappe.generate_hash(length=10)
-    user = frappe.session.user
-    frappe.get_doc({"doctype": "AI Chat Message", "user": user, "session_id": session, "role": "user", "content": prompt}).insert()
-    reply = _process_with_mcp(prompt, session, user, model)
-    frappe.get_doc({"doctype": "AI Chat Message", "user": user, "session_id": session, "role": "assistant", "content": reply}).insert()
-    return {"response": reply, "session": session}
-
-
-def _process_with_mcp(prompt, session, user, model):
-    """Process prompt using MCP tools."""
-    pl = prompt.lower().strip()
-    mcp = FrappeMCP()
-
-    # Check for illegal operations first
-    illegal = check_illegal_operation(prompt)
-    if illegal:
-        return "🚫 " + illegal
-
-    # Confirm / submit
-    if pl in ["submit", "finalize", "jama", "jama kar"]:
-        return _handle_submit(session, user, mcp)
-
-    # Cancel / reject
-    if pl in ["no", "nah", "nahi", "na", "cancel", "radh kar", "delete"]:
-        return _handle_cancel(session, user, mcp)
-
-    # Yes / confirm
-    if pl in ["yes", "yeah", "haan", "han", "ok", "okay", "sure", "bilkul", "thik hai", "confirm"]:
-        return _handle_confirm(session, user, mcp, prompt)
-
-    # Guided conversation answer
-    _g_state = load_guided(session, user)
-    if _g_state and _g_state.get("pending_field"):
-        return guided_answer(session, user, prompt)
-
-    # Active guided session with new data
-    if _g_state and _g_state.get("doctype"):
-        _g_dt = _g_state.get("doctype")
-        _g_data = dict(_g_state.get("data") or {})
-        _g_new = _extract_fields_for(_g_dt, prompt)
-        _g_changed = False
-        for _k, _v in _g_new.items():
-            if _v not in (None, "") and _g_data.get(_k) != _v:
-                _g_data[_k] = _v
-                _g_changed = True
-        if _g_changed:
-            return guided_start(session, user, _g_dt, _g_data)
-        return guided_ready_again(session, user)
-
-    # Report detection
-    report = detect_report(prompt)
-    if report:
-        return _handle_report(report, mcp)
-
-    # Intent detection
-    intent = detect_intent(prompt)
-    if intent:
-        doctype, action = intent
-        if action == "create":
-            return _handle_create_intent(doctype, prompt, session, user, mcp)
-        elif action == "view":
-            return _handle_view_intent(prompt, mcp)
-        elif action == "print":
-            return handle_print(prompt, mcp)
-        elif action == "report":
-            return _handle_report((None, {"doctype": doctype, "label": doctype + " Report"}), mcp)
-
-    # Shipment patterns — parse first, preview, require explicit confirmation
-    # before any master data (supplier/items) or receipt is created.
-    if re.search(r"\b(arriv|aa gaya|aagya|mil gaya|resiv|reciv|shipment)", pl):
-        result = handle_shipment_nl(prompt, mcp)
-        if not result.get("ok"):
-            return result.get("message", result.get("error", "Could not record shipment."))
-        data = result.get("data") or {}
-        preview = []
-        preview.append("- Supplier: " + (data.get("supplier") or "?"))
-        preview.append("- Vehicle: " + (data.get("vehicle_no") or "n/a"))
-        for it in data.get("items", []):
-            preview.append("- %s x %s" % (it.get("qty", "?"),
-                                          it.get("item_code") or it.get("item_name")))
-        preview.append("- Warehouse: " + (data.get("warehouse") or "default"))
-        # Persist the parsed-but-unconfirmed intent as an auditable draft so the
-        # confirmation step (user says "yes") finalizes it through the same
-        # draft/confirm/audit path used by the workflow endpoint.
-        draft_id = save_shipment_draft(session, user, data)
-        if not draft_id:
-            return "❌ Could not save shipment draft. Please try again."
-        return ("📦 Shipment parsed. Please review:\n" + "\n".join(preview) +
-                "\n\nReply **yes** to record this receipt, or tell me what to change.")
-
-    # Stock issue patterns
-    if re.search(r"\b(issue|transfer|jari|dena)\b.*\b(stock|maal|saman|item)\b", pl):
-        result = handle_issue_nl(prompt, mcp)
-        if result.get("ok"):
-            return f"✅ Stock Issue: {result.get('name')}\n{result.get('next', '')}"
-        return result.get("message", result.get("error", "Could not issue stock."))
-
-    # Count queries
-    count_reply = handle_count_query(prompt, mcp)
-    if count_reply:
-        return count_reply
-
-    # Fall back to LLM
-    return _fallback_to_llm(prompt, session, user, model)
-
-
-def _handle_submit(session, user, mcp):
-    from erp_ai.rbac import check_permission
-    _doc_msg = frappe.db.get_all("AI Chat Message",
-        filters={"session_id": session or "", "role": "assistant", "content": ["like", "[DOC_CREATED]%"], "user": user},
-        fields=["content"], order_by="creation desc", limit=1)
-    if _doc_msg:
-        _parts = _doc_msg[0].content.replace("[DOC_CREATED]|", "").split("|")
-        if len(_parts) >= 2:
-            err = check_permission(user, _parts[0], "submit")
-            if err:
-                return "🚫 " + err
-            _result = mcp.call_tool("submit_document", {"doctype": _parts[0], "name": _parts[1]})
-            if "error" in _result:
-                return "❌ Could not submit: " + _result["error"]
-            return f"✅ {_parts[0]} {_parts[1]} submitted!"
-    return "Nothing to submit. Create something first."
-
-
-def _handle_cancel(session, user, mcp):
-    clear_guided(session, user)
-    # Discard any pending AI Assistant Action draft that has not been confirmed.
-    _draft = get_draft(session)
-    if _draft and isinstance(_draft, dict):
-        frappe.get_doc({"doctype": "AI Chat Message", "user": user, "session_id": session or "",
-                        "role": "user", "content": "[DRAFT_CLEARED]"}).insert()
-        # No direct commit here — framework commits at the request boundary
-        return "❌ %s draft cancelled. What else?" % _draft.get("target_doctype", "draft")
-    return "🛑 Cancelled. Is there anything else?"
-
-
-def _handle_confirm(session, user, mcp, prompt):
-    # Conversational "yes/confirm" now goes through the centralized,
-    # auditable draft engine. Any pending shipment preview that was created via
-    # the workflow endpoint is already stored as an AI Assistant Action draft,
-    # not as a chat marker, so it is handled by the same confirm path below.
-    _g_state = load_guided(session, user)
-    if _g_state and _g_state.get("pending_field"):
-        if _g_state.get("pending_field") in OPTIONAL_FOLLOWUPS.get(_g_state.get("doctype"), []):
-            return guided_answer(session, user, "skip")
-        return guided_answer(session, user, prompt)
-    _result = confirm_draft(session=session, user=user)
-    if not isinstance(_result, dict):
-        return "❌ Draft confirmation returned an unexpected response."
-    if "error" in _result:
-        return "❌ Could not confirm: " + _result["error"]
-    if "name" not in _result:
-        return "❌ Draft confirmed, but no result returned."
-    _doctype = _result.get("doctype", "Document")
-    _name = _result.get("name", "?")
-    _print = _result.get("print_url", "")
-    _print_hint = "\n🖨️ Print: " + _print if _print else ""
-    frappe.get_doc({"doctype": "AI Chat Message", "user": user, "session_id": session, "role": "assistant",
-                    "content": "[DOC_CREATED]|" + _doctype + "|" + _name}).insert()
-    # confirm_draft committed at its own workflow boundary — no direct commit here
-    return "✅ {_doctype} {_name} created!{_print_hint}\nSay 'submit' to finalize.".format(
-        _doctype=_doctype, _name=_name, _print_hint=_print_hint)
+    Deliberately does NOT execute create/submit intents — evaluations must
+    never write documents. Create/submit coverage goes through the dedicated
+    workflow tests instead.
+    """
+    return _assistant_reply(prompt, session, model)[0]
 
 
 def _handle_create_intent(doctype, prompt, session, user, mcp):
@@ -505,16 +372,17 @@ def _extract_amount(prompt):
 
 
 def _handle_view_intent(prompt, mcp):
-    from erp_ai.rbac import check_permission
     # Try to extract doctype from the prompt for RBAC
     _doc_match = re.search(r"\b(show|view|details|dekho|dikhhao)\s+(?:of\s+)?(?:item\s+|invoice\s+|customer\s+)?([A-Z][A-Z0-9\-]{2,20})", prompt, re.I)
     if _doc_match:
         _doc_name = _doc_match.group(2).upper()
         for _dt in ["Item", "Customer", "Supplier", "Sales Invoice", "Purchase Invoice"]:
-            if frappe.db.exists(_dt, _doc_name):
-                _doc = mcp.call_tool("get_document", {"doctype": _dt, "name": _doc_name})
-                if "error" not in _doc:
-                    return format_document_view(_dt, _doc)
+            # get_document enforces read permission, so one call answers both
+            # "does it exist" and "may this user read it" (frappe.db.exists()
+            # checks neither and would leak the existence of other users' docs).
+            _doc = mcp.call_tool("get_document", {"doctype": _dt, "name": _doc_name})
+            if "error" not in _doc:
+                return format_document_view(_dt, _doc)
         return f"Document '{_doc_name}' not found."
     return "Please specify which document to view. Example: 'show item STEEL-ROD'"
 
@@ -543,13 +411,162 @@ def _extract_fields_for(doctype, prompt):
     return {}
 
 
+# ---------------------------------------------------------------------------
+# ERP Operator: bounded tool-calling loop
+# ---------------------------------------------------------------------------
+# The LLM may answer directly, or request an ERP tool by replying with a single
+# JSON object: {"tool": "<name>", "parameters": {...}}. The result is fed back
+# and the loop repeats until the model answers in prose or hits the iteration
+# cap. A live system snapshot is injected up front so even small local models
+# (which cannot reliably emit JSON) still answer with real numbers instead of
+# telling the user to open a menu.
+_OPERATOR_MAX_ITERS = 3
+_OPERATOR_SNAPSHOT_CHARS = 4000
+
+
+def _operator_snapshot():
+    """Live site counts the model can quote without a tool call. Best-effort."""
+    try:
+        from erp_ai.erp_tools import get_system_overview
+        data = get_system_overview()
+    except Exception:
+        log_error_safely("erp_ai._operator_snapshot")
+        return ""
+    if not data:
+        return ""
+    text = json.dumps(data, default=str)
+    if len(text) > _OPERATOR_SNAPSHOT_CHARS:
+        text = text[:_OPERATOR_SNAPSHOT_CHARS] + "...(truncated)"
+    return text
+
+
+def _operator_system_prompt(user):
+    """System prompt: operator role, callable tools, and live ERP state.
+
+    Only read tools are advertised: operator writes must go through the
+    draft -> confirm pipeline (preview, idempotency, audit), never a direct
+    tool call from the model.
+    """
+    from erp_ai.erp_tools import get_erp_tools_list
+    lines = [
+        f"You are the ERP Operator for this ERPNext site. The user is "
+        f"{frappe.utils.get_fullname(user)} ({user}).",
+        "You have DIRECT access to the database through the tools below. NEVER tell",
+        "the user to open a menu, click a report or navigate somewhere — call the",
+        "tool yourself and report the real values you get back. If a count is in the",
+        "snapshot below, quote it directly.",
+        "",
+        "To call a tool, reply with ONE JSON object and nothing else:",
+        '{"tool": "get_customers", "parameters": {"limit": 10}}',
+        "You will then receive the result; after that, answer the user in plain",
+        "language. These tools are read-only: to create or change documents, tell",
+        "the user to ask the assistant to create it (guided draft + confirmation).",
+        "",
+        "Available tools:",
+    ]
+    for tool in get_erp_tools_list():
+        if tool.get("name", "").startswith(("create_", "update_", "delete_", "submit_")):
+            continue
+        params = ", ".join(tool.get("parameters", {}).keys()) or "no parameters"
+        lines.append("- %s(%s): %s" % (tool["name"], params, tool["description"]))
+    snapshot = _operator_snapshot()
+    if snapshot:
+        lines += ["", "Current live snapshot of this site:", snapshot]
+    return "\n".join(lines)
+
+
+def _iter_json_objects(text):
+    """Yield each balanced-brace JSON object found in `text`.
+
+    Tool-call parameters are nested objects, so a non-greedy regex would stop
+    at the first inner `}` and hand json.loads a truncated payload. Scan with a
+    brace counter, skipping braces that live inside strings.
+    """
+    depth = 0
+    start = None
+    in_string = False
+    escaped = False
+    for i, ch in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            if depth:
+                depth -= 1
+                if depth == 0 and start is not None:
+                    yield text[start:i + 1]
+                    start = None
+
+
+def _parse_tool_call(text):
+    """Return (tool_name, parameters) if the reply is a valid tool call, else None."""
+    if not text or '"tool"' not in text:
+        return None
+    for candidate in _iter_json_objects(text):
+        if '"tool"' not in candidate:
+            continue
+        try:
+            payload = json.loads(candidate)
+        except ValueError:
+            continue
+        name = payload.get("tool")
+        params = payload.get("parameters") or {}
+        if isinstance(name, str) and name and isinstance(params, dict):
+            return (name, params)
+    return None
+
+
 def _fallback_to_llm(prompt, session, user, model):
-    system = (
-        f"You are the AI assistant of SPI's ERPNext system. "
-        f"You can create documents, check stock, answer questions about ERP data. "
-        f"The user is {frappe.utils.get_fullname(user)} ({user}). Be helpful and concise."
-    )
-    return ask_ollama(system + "\n\nUser: " + prompt + "\nAssistant:", model)
+    """Answer via the LLM with live ERP data, executing read tool calls on request.
+
+    Read-only by design (audit P0: operator bypass): a model-requested write
+    tool (create_*/update_*/delete_*/submit_*) is never executed here — those
+    must go through the draft -> confirm pipeline with preview, idempotency
+    and audit. The model gets a read-only observation and answers accordingly.
+    """
+    from erp_ai.erp_tools import ERP_TOOLS, execute_erp_tool
+    system = _operator_system_prompt(user)
+    reply = ask_llm(system + "\n\nUser: " + prompt + "\nAssistant:", model=model)
+
+    for _iteration in range(_OPERATOR_MAX_ITERS):
+        call = _parse_tool_call(reply)
+        if not call:
+            break
+        name, params = call
+        if name not in ERP_TOOLS:
+            break
+        if name.startswith(("create_", "update_", "delete_", "submit_")):
+            observation = json.dumps({
+                "tool": name, "error": "read-only operator",
+                "message": "Writes are not allowed through the operator loop. "
+                           "Tell the user to ask the assistant to create it, which "
+                           "shows a preview and requires explicit confirmation.",
+            })
+        else:
+            result = execute_erp_tool(name, params)
+            observation = json.dumps(
+                {"tool": name, "parameters": params, "result": result}, default=str
+            )
+        reply = ask_llm(
+            system
+            + "\n\nUser: " + prompt
+            + "\n\nYou called %s and got:\n%s" % (name, observation)
+            + "\n\nNow answer the user using this data. Do not call another tool "
+              "unless the data above is insufficient.\nAssistant:",
+            model=model,
+        )
+    return reply
 
 
 # ---------------------------------------------------------------------------
@@ -564,8 +581,10 @@ def ask_v2_with_voice(prompt, session=None, model=None, voice=True):
     response_text = result.get("response", "")
     audio_url = None
     if voice and response_text:
-        tts_result = text_to_speech(response_text)
-        audio_url = tts_result.get("url")
+        from erp_ai.voice.toggle import is_voice_enabled
+        if is_voice_enabled():
+            tts_result = text_to_speech(response_text)
+            audio_url = tts_result.get("url")
     return {"response": response_text, "session": result.get("session"), "audio_url": audio_url}
 
 
@@ -583,6 +602,9 @@ def workflow_shipment_receipt(data=None):
     data = json.loads(data) if isinstance(data, str) else (data or {})
     user = frappe.session.user
     session = frappe.session.session_id
+    if not session:
+        session = "sess-" + frappe.generate_hash(length=12)
+        frappe.session.session_id = session
 
     # Parse the shipment data
     parsed = handle_shipment_nl_request(data)
@@ -614,6 +636,9 @@ def workflow_stock_issue(data=None):
     data = json.loads(data) if isinstance(data, str) else (data or {})
     user = frappe.session.user
     session = frappe.session.session_id
+    if not session:
+        session = "sess-" + frappe.generate_hash(length=12)
+        frappe.session.session_id = session
 
     # Parse the stock issue data with warehouse requirement
     parsed = handle_stock_issue_nl_request(data)
@@ -739,7 +764,6 @@ def confirm_workflow_action(action_id, user, data=None):
     ``erp_ai.draft_workflow.confirm_draft`` so the finalisation path
     (pending -> processing -> completed/failed) and audit writes stay centralized.
     """
-    from erp_ai.draft_workflow import confirm_draft
 
     confirm_result = confirm_draft(
         session=frappe.session.session_id,
@@ -759,27 +783,12 @@ def confirm_workflow_action(action_id, user, data=None):
 def cancel_workflow_action(action_id, user):
     """Cancel a pending workflow action.
 
-    This is the public cancel boundary. It delegates to the existing
-    ``erp_ai.draft_workflow`` cancel path when present; otherwise it falls back
-    to a minimal, safe, user-bound cancellation that only writes through the
-    auditable action DocType.
+    This is the public cancel boundary. It is deliberately action-id based rather
+    than session based: the caller names the exact action to abandon, so a stale
+    browser session cannot cancel the wrong draft. Cancellation writes only
+    through the auditable action DocType.
     """
     import frappe
-
-    try:
-        from erp_ai.draft_workflow import cancel_draft
-
-        cancel_result = cancel_draft(
-            session=frappe.session.session_id,
-            action_id=action_id,
-            user=user,
-        )
-        if isinstance(cancel_result, dict):
-            return cancel_result
-    except Exception:
-        pass
-
-    # Fallback: minimal user-bound cancellation via the action DocType only.
 
     action = frappe.get_doc("AI Assistant Action", action_id)
     if action.user != user:
@@ -808,26 +817,54 @@ def make_token(user="Administrator"):
 # ---------------------------------------------------------------------------
 @frappe.whitelist()
 def setup_workspace(**kwargs):
-    """Create the AI Assistant Hub workspace.
+    """Create the AI Assistant Hub workspace from the bundled JSON spec.
 
     Requires System Manager role — workspaces and pages are privileged setup objects.
     """
     if "System Manager" not in frappe.get_roles():
         frappe.throw("Only System Manager can set up the workspace", frappe.PermissionError)
+    import json
+    import pathlib
     try:
         if not frappe.db.exists("Page", "ai-assistant"):
             frappe.get_doc({"doctype": "Page", "page_name": "ai-assistant", "module": "ERP AI", "standard": "Yes", "title": "AI Assistant"}).insert()
+        ws_path = pathlib.Path(__file__).resolve().parent / "workspace" / "ai_assistant_hub" / "ai_assistant_hub.json"
+        spec = json.loads(ws_path.read_text(encoding="utf-8"))
+        content_blocks = json.loads(spec["content"])
+        shortcuts_data = spec.get("shortcuts", [])
+        links_data = _available_workspace_links(spec.get("links", []))
         if frappe.db.exists("Workspace", {"label": "AI Assistant Hub"}):
             ws = frappe.get_doc("Workspace", "AI Assistant Hub")
-            ws.content = json.dumps([{"id": "ai_welcome", "type": "header", "data": {"text": "AI Assistant Hub", "col": 12}}])
+            ws.content = json.dumps(content_blocks)
+            ws.shortcuts = []
+            for s in shortcuts_data:
+                ws.append("shortcuts", s)
+            ws.links = []
+            for link in links_data:
+                ws.append("links", link)
+            ws.number_cards = []
+            for card in spec.get("number_cards", []):
+                ws.append("number_cards", card)
+            for k in ("label","title","module","public","indicator_color","sequence_id"):
+                if k in spec:
+                    setattr(ws, k, spec[k])
             ws.save()
             frappe.db.commit()
             return ws.name
         ws = frappe.new_doc("Workspace")
-        ws.label = "AI Assistant Hub"
-        ws.title = "AI Assistant Hub"
-        ws.module = "ERP AI"
-        ws.public = 1
+        ws.label = spec.get("label", "AI Assistant Hub")
+        ws.title = spec.get("title", "AI Assistant Hub")
+        ws.module = spec.get("module", "ERP AI")
+        ws.public = spec.get("public", 1)
+        ws.indicator_color = spec.get("indicator_color", "green")
+        ws.sequence_id = spec.get("sequence_id", 1.0)
+        ws.content = json.dumps(content_blocks)
+        for s in shortcuts_data:
+            ws.append("shortcuts", s)
+        for link in links_data:
+            ws.append("links", link)
+        for card in spec.get("number_cards", []):
+            ws.append("number_cards", card)
         ws.insert()
         frappe.db.commit()
         return ws.name
@@ -835,6 +872,49 @@ def setup_workspace(**kwargs):
         import traceback
         traceback.print_exc()
         return None
+
+
+def _available_workspace_links(links):
+    """Keep fixture links that exist on this site's installed apps.
+
+    ERPNext deployments vary: HRMS and custom app DocTypes are optional. A
+    missing target must not prevent the rest of the workspace from syncing.
+    Empty card breaks are omitted after filtering.
+    """
+    available = []
+    pending_break = None
+    pending_links = []
+    for link in links:
+        if link.get("type") == "Card Break":
+            if pending_break and pending_links:
+                available.extend([pending_break, *pending_links])
+            pending_break = link
+            pending_links = []
+            continue
+        link_type = link.get("link_type")
+        target = link.get("link_to")
+        exists = (
+            frappe.db.exists("DocType", target)
+            if link_type == "DocType"
+            else frappe.db.exists("Page", target)
+            if link_type == "Page"
+            else True
+        )
+        if exists:
+            pending_links.append(link)
+    if pending_break and pending_links:
+        available.extend([pending_break, *pending_links])
+    return available
+
+
+@frappe.whitelist()
+def sync_workspace_from_json():
+    """Public entry point for install-time hook and manual refresh.
+
+    Reads the bundled workspace JSON and writes it to the live Workspace
+    DocType. Requires System Manager role.
+    """
+    return setup_workspace()
 
 
 # ---------------------------------------------------------------------------
@@ -869,8 +949,13 @@ def voice_set(enabled):
 @frappe.whitelist()
 def health():
     """Run a comprehensive app health check."""
-    from erp_ai.diagnostics import health_check
-    return health_check()
+    try:
+        from erp_ai.diagnostics import health_check
+    except ImportError:
+        health_check = None
+    if health_check:
+        return health_check()
+    return {"status": "ok", "note": "diagnostics module not available"}
 
 
 # ---------------------------------------------------------------------------
@@ -889,7 +974,6 @@ def capabilities():
             "voice": True,
             "guided_conversation": True,
             "draft_workflow": True,
-            "duplication_check": True,
             "reports": True,
         },
     }
@@ -941,13 +1025,23 @@ def ocr_extract_text(file_url):
     from frappe.utils.file_manager import get_file
 
     from erp_ai.attachments import ALLOWED_BASE_DIR, _safe_path, extract_text_from_file, validate_file
-    from erp_ai.safety import check_illegal_operation
 
     if not file_url:
         frappe.throw("file_url is required")
     # Only operate on Frappe-managed files
     if not file_url.startswith(("/files/", "/private/files/")):
         return {"error": "Only Frappe-managed uploads are supported (use a /files/ URL)"}
+    # frappe.utils.file_manager.get_file() reads straight from the filesystem
+    # without any permission check, so resolve the File doc and enforce read
+    # permission first: another user's private upload must not be OCR-able by
+    # URL. File.has_permission() still allows public files and files attached to
+    # a document the caller may read, mirroring the Desk behaviour.
+    file_name = frappe.db.get_value("File", {"file_url": file_url}, "name")
+    if not file_name or not frappe.has_permission("File", "read", doc=file_name):
+        frappe.throw(
+            frappe._("You do not have permission to read this file"),
+            frappe.PermissionError,
+        )
     try:
         content, filename = get_file(file_url)
     except Exception:
@@ -1031,3 +1125,444 @@ def run_evaluation(category=None, limit=20):
     def _ask(prompt):
         return _process_with_mcp(prompt, frappe.generate_hash(length=8), frappe.session.user, None)
     return run_evaluation(_ask, cases)
+
+
+# ---------------------------------------------------------------------------
+# Help System API
+# ---------------------------------------------------------------------------
+
+
+@frappe.whitelist()
+def help_get_categories():
+    """Return help article categories."""
+    from erp_ai.help.articles import get_help_categories
+    return get_help_categories()
+
+
+@frappe.whitelist()
+def help_get_quick_actions():
+    """Return quick-action cards."""
+    from erp_ai.help.articles import get_quick_actions
+    return get_quick_actions()
+
+
+@frappe.whitelist()
+def help_get_articles(category=None, search=None, limit=50):
+    """Return help articles, optionally filtered."""
+    from erp_ai.help.articles import get_articles
+    return get_articles(category=category, search=search, limit=int(limit))
+
+
+@frappe.whitelist()
+def help_get_article(name):
+    """Return a single help article."""
+    from erp_ai.help.articles import get_article
+    return get_article(name)
+
+
+@frappe.whitelist()
+def help_search(query):
+    """Search help articles by query string."""
+    from erp_ai.help.articles import search_articles
+    return search_articles(query)
+
+
+@frappe.whitelist()
+def help_get_knowledge_base():
+    """Return the ERPNext knowledge base summary."""
+    from erp_ai.help.articles import get_knowledge_base
+    return get_knowledge_base()
+
+
+# ---------------------------------------------------------------------------
+# LLM Model Discovery API (OpenRouter-style model listing)
+# ---------------------------------------------------------------------------
+
+
+@frappe.whitelist()
+def list_available_models(provider=None, api_key="", base_url=""):
+    """List all available models from the specified LLM provider.
+
+    Like OpenRouter's /models endpoint: returns a list of model objects with
+    "id", "name", and provider-specific metadata. Used by the AI Settings UI
+    to populate the model dropdown dynamically when the provider changes.
+
+    Args:
+        provider (str): LLM provider key, e.g. "ollama", "openrouter", "groq".
+            Defaults to the currently configured provider in AI Settings.
+        api_key (str): Provider API key. If omitted, reads from AI Settings.
+            Only required for cloud providers (OpenRouter, Together, Groq, etc.).
+            Local providers (Ollama, LM Studio) ignore this.
+        base_url (str): Custom base URL for local providers. Only used for
+            Ollama, LM Studio, or Custom API providers.
+
+    Returns:
+        list[dict]: Each dict has at least "id" (model identifier) and "name"
+        (human-readable label). Cloud providers also return "context_window",
+        "pricing", "provider", etc.
+    """
+    # Settings-page helper. It reads AI Settings (including the configured API
+    # key) and then performs an outbound HTTP request to a caller-supplied
+    # ``base_url``, so it is a privileged surface, gated like the settings it
+    # serves: a caller who is not a System Manager must not be able to make the
+    # server fetch an arbitrary URL.
+    if "System Manager" not in frappe.get_roles():
+        frappe.throw(
+            frappe._("Only System Manager can list provider models"),
+            frappe.PermissionError,
+        )
+
+    # ``import requests as _requests`` used to live here, which left the extracted
+    # ``_list_*_models`` helpers at module scope referencing an undefined name —
+    # every provider raised NameError. They now use the module-level ``requests``.
+
+    from erp_ai.llm import LLMProvider
+
+    # Resolve provider from AI Settings if not given
+    if not provider:
+        settings = frappe.get_single("AI Settings")
+        if settings:
+            provider = (settings.get("llm_provider") or "").strip()
+        else:
+            provider = LLMProvider.OLLAMA
+    provider = (provider or LLMProvider.OLLAMA).strip().lower()
+
+    # Resolve credentials
+    if not api_key:
+        settings = frappe.get_single("AI Settings")
+        if settings:
+            api_key = (settings.get("api_key") or "").strip()
+    if not base_url:
+        settings = frappe.get_single("AI Settings")
+        if settings:
+            base_url = (settings.get("custom_api_base_url") or "").strip()
+
+    provider_methods = {
+        "ollama": lambda: _list_ollama_models(base_url),
+        "lm_studio": lambda: _list_openai_compat_models(
+            base_url or "http://localhost:1234/v1", api_key
+        ),
+        "openrouter": lambda: _list_openrouter_models(api_key),
+        "together": lambda: _list_together_models(api_key),
+        "groq": lambda: _list_groq_models(api_key),
+        "anthropic": lambda: _list_anthropic_models(api_key),
+        "openai": lambda: _list_openai_models(api_key),
+        "gemini": lambda: _list_gemini_models(api_key),
+        "mistral": lambda: _list_mistral_models(api_key),
+        "custom": lambda: _list_openai_compat_models(
+            base_url or "http://localhost:8080/v1", api_key
+        ),
+    }
+
+    method = provider_methods.get(provider)
+    if method is None:
+        frappe.throw(f"Unknown LLM provider: {provider}")
+
+    try:
+        return method()
+    except Exception:
+        log_error_safely("erp_ai.list_available_models")
+        frappe.throw(
+            _("Failed to list models for {0}").format(provider)
+        )
+
+
+def _list_ollama_models(base_url=None):
+    """Query Ollama /api/tags and return local models."""
+    base_url = base_url or _get_ollama_base_url()
+    try:
+        resp = requests.get(f"{base_url}/api/tags", timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        frappe.msgprint(_("Could not reach Ollama at {0}: {1}").format(base_url, e))
+        return []
+
+    models = []
+    for model in data.get("models", []):
+        name = model.get("name") or "unknown"
+        models.append({
+            "id": name,
+            "name": name,
+            "provider": "ollama",
+            "owned_by": "local",
+        })
+    return models
+
+
+def _list_openai_compat_models(base_url, api_key=""):
+    """List models from any OpenAI-compatible API (LM Studio, Custom, etc.)."""
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    try:
+        resp = requests.get(f"{base_url}/models", headers=headers, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        frappe.msgprint(_("Could not reach API at {0}: {1}").format(base_url, e))
+        return []
+
+    models = []
+    for m in data.get("data", []):
+        models.append({
+            "id": m.get("id") or m.get("name") or "unknown",
+            "name": m.get("id") or m.get("name") or "unknown",
+            "provider": "custom",
+            "owned_by": m.get("owned_by", "local"),
+        })
+    return models
+
+
+def _list_openrouter_models(api_key):
+    """Fetch the full model catalog from OpenRouter."""
+    if not api_key:
+        frappe.msgprint(_("OpenRouter API key is required to list models."))
+        return []
+
+    try:
+        resp = requests.get(
+            "https://openrouter.ai/api/v1/models",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        frappe.msgprint(_("Could not reach OpenRouter: {0}").format(e))
+        return []
+
+    models = []
+    for m in data.get("data", []):
+        models.append({
+            "id": m.get("id", ""),
+            "name": m.get("id", ""),
+            "provider": "openrouter",
+            "context_window": m.get("context_window"),
+            "pricing": m.get("pricing", {}),
+            "provider_info": {
+                "id": m.get("provider", {}).get("id", ""),
+                "name": m.get("provider", {}).get("name", ""),
+            },
+            "object": m.get("object", "model"),
+        })
+    return models
+
+
+def _list_together_models(api_key):
+    """Fetch models from Together AI."""
+    if not api_key:
+        frappe.msgprint(_("Together AI API key is required to list models."))
+        return []
+
+    try:
+        resp = requests.get(
+            "https://api.together.ai/models",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Accept": "application/json",
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        frappe.msgprint(_("Could not reach Together AI: {0}").format(e))
+        return []
+
+    models = []
+    for m in data.get("models", []):
+        models.append({
+            "id": m.get("name") or m.get("model", ""),
+            "name": m.get("display_name") or m.get("name", ""),
+            "provider": "together",
+            "context_window": m.get("context_length"),
+            "pricing": {
+                "input": m.get("pricing", {}).get("input", "unknown"),
+                "output": m.get("pricing", {}).get("output", "unknown"),
+            },
+            "owned_by": "together",
+        })
+    return models
+
+
+def _list_groq_models(api_key):
+    """Fetch models from Groq."""
+    if not api_key:
+        frappe.msgprint(_("Groq API key is required to list models."))
+        return []
+
+    try:
+        resp = requests.get(
+            "https://api.groq.com/openai/v1/models",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        frappe.msgprint(_("Could not reach Groq: {0}").format(e))
+        return []
+
+    models = []
+    for m in data.get("data", []):
+        models.append({
+            "id": m.get("id", ""),
+            "name": m.get("id", ""),
+            "provider": "groq",
+            "context_window": m.get("context_window"),
+            "owned_by": m.get("owned_by", "groq"),
+        })
+    return models
+
+
+def _list_anthropic_models(api_key):
+    """Return a curated list of Anthropic models.
+
+    Anthropic does not expose a public model listing endpoint, so we return
+    the well-known production models. The API key is still required to prove
+    the user has credentials.
+    """
+    if not api_key:
+        frappe.msgprint(_("Anthropic API key is required to authenticate."))
+        return []
+
+    known_models = [
+        ("claude-opus-4-5-20251001", "Claude Opus 4.5", 200000),
+        ("claude-sonnet-4-5-20250929", "Claude Sonnet 4.5", 200000),
+        ("claude-haiku-4-5-20251001", "Claude Haiku 4.5", 200000),
+        ("claude-opus-4-1-20241219", "Claude Opus 4 (2024)", 200000),
+        ("claude-sonnet-4-20241022", "Claude Sonnet 4 (2024)", 200000),
+        ("claude-haiku-3-5-20241022", "Claude Haiku 3.5", 200000),
+        ("claude-3-5-sonnet-20241022", "Claude 3.5 Sonnet", 200000),
+        ("claude-3-opus-20240229", "Claude 3 Opus", 200000),
+        ("claude-3-sonnet-20240229", "Claude 3 Sonnet", 200000),
+        ("claude-3-haiku-20240307", "Claude 3 Haiku", 200000),
+        ("claude-2.1", "Claude 2.1", 200000),
+        ("claude-2.0", "Claude 2", 100000),
+        ("claude-instant-1.2", "Claude Instant 1.2", 100000),
+    ]
+    return [
+        {
+            "id": model_id,
+            "name": display_name,
+            "provider": "anthropic",
+            "context_window": context_window,
+            "owned_by": "anthropic",
+        }
+        for model_id, display_name, context_window in known_models
+    ]
+
+
+def _list_openai_models(api_key):
+    """List OpenAI models via the official API."""
+    if not api_key:
+        frappe.msgprint(_("OpenAI API key is required to list models."))
+        return []
+
+    try:
+        resp = requests.get(
+            "https://api.openai.com/v1/models",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        frappe.msgprint(_("Could not reach OpenAI: {0}").format(e))
+        return []
+
+    models = []
+    for m in data.get("data", []):
+        models.append({
+            "id": m.get("id", ""),
+            "name": m.get("id", ""),
+            "provider": "openai",
+            "context_window": m.get("context_window"),
+            "owned_by": m.get("owned_by", "openai"),
+        })
+    return models
+
+
+def _list_gemini_models(api_key):
+    """Return a curated list of Google Gemini models.
+
+    Gemini does not expose a public model listing endpoint via the REST API
+    in the same way OpenAI does, so we return the well-known production models.
+    """
+    if not api_key:
+        frappe.msgprint(_("Google Gemini API key is required to authenticate."))
+        return []
+
+    known_models = [
+        ("gemini-2.5-pro", "Gemini 2.5 Pro", 1000000),
+        ("gemini-2.5-flash", "Gemini 2.5 Flash", 1000000),
+        ("gemini-2.0-flash", "Gemini 2.0 Flash", 1000000),
+        ("gemini-2.0-flash-lite", "Gemini 2.0 Flash Lite", 1000000),
+        ("gemini-1.5-pro", "Gemini 1.5 Pro", 2000000),
+        ("gemini-1.5-flash", "Gemini 1.5 Flash", 1000000),
+        ("gemini-1.5-flash-8b", "Gemini 1.5 Flash-8B", 1000000),
+        ("gemini-1.0-pro", "Gemini 1.0 Pro", 30720),
+        ("gemini-1.0-pro-vision", "Gemini 1.0 Pro Vision", 30720),
+        ("gemini-1.0-ultra", "Gemini 1.0 Ultra", 32768),
+    ]
+    return [
+        {
+            "id": model_id,
+            "name": display_name,
+            "provider": "gemini",
+            "context_window": context_window,
+            "owned_by": "google",
+        }
+        for model_id, display_name, context_window in known_models
+    ]
+
+
+def _list_mistral_models(api_key):
+    """Return a curated list of Mistral models.
+
+    Mistral's API does not expose a simple model listing endpoint, so we
+    return the well-known production models.
+    """
+    if not api_key:
+        frappe.msgprint(_("Mistral API key is required to authenticate."))
+        return []
+
+    known_models = [
+        ("mistral-large-latest", "Mistral Large 2", 128000),
+        ("mistral-medium-latest", "Mistral Medium", 128000),
+        ("mistral-small-latest", "Mistral Small 3", 128000),
+        ("open-mixtral-8x22b", "Mixtral 8x22B", 128000),
+        ("open-mixtral-8x7b", "Mixtral 8x7B", 32000),
+        ("open-mistral-7b", "Mistral 7B", 32000),
+        ("codestral-latest", "Codestral (Code)", 32000),
+        ("ministral-8b-latest", "Ministral 8B", 32000),
+        ("ministral-3b-latest", "Ministral 3B", 32000),
+    ]
+    return [
+        {
+            "id": model_id,
+            "name": display_name,
+            "provider": "mistral",
+            "context_window": context_window,
+            "owned_by": "mistral",
+        }
+        for model_id, display_name, context_window in known_models
+    ]
+
+
+def _get_ollama_base_url():
+    """Read the Ollama base URL from AI Settings or environment."""
+    settings = frappe.get_single("AI Settings")
+    if settings:
+        base_url = (settings.get("custom_api_base_url") or "").strip()
+        if base_url:
+            return base_url
+    return os.environ.get("OLLAMA_BASE_URL") or "http://localhost:11434"

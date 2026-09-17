@@ -1,0 +1,223 @@
+{
+  "doctype": "DocType",
+  "name": "AI Settings",
+  "module": "ERP AI",
+  "custom": 0,
+  "is_tree": 0,
+  "istable": 0,
+  "issingle": 1,
+  "is_submittable": 0,
+  "autoname": "EVT-ONETWOSIX-INT-00000",
+  "fields": [
+    {
+      "fieldname": "section_general",
+      "label": "General Settings",
+      "fieldtype": "Section Break",
+      "insert_after": ""
+    },
+    {
+      "fieldname": "speaker_enabled",
+      "label": "Enable Speaker Output",
+      "fieldtype": "Check",
+      "default": 1,
+      "insert_after": "section_general",
+      "description": "Admin only: Enable/disable text-to-speech speaker output for AI responses"
+    },
+    {
+      "fieldname": "section_llm_provider",
+      "label": "LLM Provider Configuration",
+      "fieldtype": "Section Break",
+      "insert_after": "default_voice_model"
+    },
+    {
+      "fieldname": "llm_api_key",
+      "label": "API Key",
+      "fieldtype": "Password",
+      "default": "",
+      "insert_after": "llm_provider",
+      "description": "Required for cloud providers (OpenRouter, Together AI, Groq, Anthropic, OpenAI, Google, Mistral). Not needed for Ollama or LM Studio (local)."
+    },
+    {
+      "fieldname": "llm_base_url",
+      "label": "Custom API Base URL",
+      "fieldtype": "Data",
+      "default": "",
+      "insert_after": "llm_api_key",
+      "description": "Custom API endpoint (for Custom API or LM Studio)"
+    },
+    {
+      "fieldname": "section_models",
+      "label": "Model Selection",
+      "fieldtype": "Section Break",
+      "insert_after": "llm_base_url"
+    },
+    {
+      "fieldname": "default_llm_model",
+      "label": "Default Model",
+      "fieldtype": "Select",
+      "default": "qwen2.5:1.5b",
+      "insert_after": "section_models",
+      "description": "Select your LLM model. Options auto-update when you change the provider below.",
+      "options": "qwen2.5:1.5b\nqwen2.5:3b\nqwen2.5:7b\nllama3.1:8b\nllama3.2:3b\nllama3:latest\ngemma2:latest\nphi3:latest"
+    },
+    {
+      "fieldname": "available_models",
+      "label": "Available Models (JSON)",
+      "fieldtype": "Long Text",
+      "default": "",
+      "insert_after": "default_llm_model",
+      "description": "JSON list of available models for dropdown: [{\"name\": \"qwen2.5:1.5b\", \"provider\": \"ollama\"}, ...]"
+    },
+    {
+      "fieldname": "section_advanced",
+      "label": "Advanced Settings",
+      "fieldtype": "Section Break",
+      "insert_after": "available_models"
+    },
+    {
+      "fieldname": "default_temperature",
+      "label": "Default Temperature",
+      "fieldtype": "Float",
+      "default": 0.7,
+      "insert_after": "section_advanced",
+      "description": "0.0 = deterministic, 1.0 = creative"
+    },
+    {
+      "fieldname": "knowledge_base_enabled",
+      "label": "Knowledge Base Enabled",
+      "fieldtype": "Check",
+      "default": 1,
+      "insert_after": "default_temperature"
+    },
+    {
+      "fieldname": "max_tokens",
+      "label": "Max Tokens",
+      "fieldtype": "Int",
+      "default": 2048,
+      "insert_after": "knowledge_base_enabled"
+    },
+    {
+      "fieldname": "timeout_seconds",
+      "label": "Request Timeout (seconds)",
+      "fieldtype": "Int",
+      "default": 120,
+      "insert_after": "max_tokens"
+    },
+    {
+      "fieldname": "section_features",
+      "label": "Feature Toggles",
+      "fieldtype": "Section Break",
+      "insert_after": "timeout_seconds"
+    },
+    {
+      "fieldname": "enable_chat_history",
+      "label": "Enable Chat History",
+      "fieldtype": "Check",
+      "default": 1,
+      "insert_after": "section_features"
+    },
+    {
+      "fieldname": "enable_voice_input",
+      "label": "Enable Voice Input (STT)",
+      "fieldtype": "Check",
+      "default": 1,
+      "insert_after": "enable_chat_history"
+    },
+    {
+      "fieldname": "enable_mcp_tools",
+      "label": "Enable MCP Tools",
+      "fieldtype": "Check",
+      "default": 1,
+      "insert_after": "enable_voice_input"
+    },
+    {
+      "fieldname": "enable_workflow_creation",
+      "label": "Enable Document Creation Workflows",
+      "fieldtype": "Check",
+      "default": 1,
+      "insert_after": "enable_mcp_tools"
+    },
+    {
+      "fieldname": "section_providers",
+      "label": "Provider-Specific Settings",
+      "fieldtype": "Section Break",
+      "insert_after": "enable_workflow_creation"
+    },
+    {
+      "fieldname": "openai_org_id",
+      "label": "OpenAI Organization ID",
+      "fieldtype": "Data",
+      "default": "",
+      "insert_after": "section_providers"
+    },
+    {
+      "fieldname": "anthropic_api_version",
+      "label": "Anthropic API Version",
+      "fieldtype": "Data",
+      "default": "2023-06-01",
+      "insert_after": "openai_org_id"
+    },
+    {
+      "fieldname": "google_api_key",
+      "label": "Google API Key",
+      "fieldtype": "Password",
+      "default": "",
+      "insert_after": "anthropic_api_version"
+    },
+    {
+      "fieldname": "mistral_api_key",
+      "label": "Mistral API Key",
+      "fieldtype": "Password",
+      "default": "",
+      "insert_after": "google_api_key"
+    },
+    {
+      "fieldname": "llm_provider",
+      "label": "LLM Provider",
+      "fieldtype": "Select",
+      "options": "ollama|Ollama (Local - Free)\nlm_studio|LM Studio (Local - Free)\nopenrouter|OpenRouter (Cloud - Pay per use)\ntogether|Together AI (Cloud - Pay per use)\ngroq|Groq (Cloud - Fast)\nantropic|Anthropic / Claude (Cloud)\nopenai|OpenAI / GPT (Cloud)\ngemini|Google Gemini (Cloud)\nmistral|Mistral AI (Cloud)\ncustom|Custom OpenAI-compatible API",
+      "default": "ollama",
+      "reqd": 1,
+      "description": "Select the LLM provider. Local providers require no API key."
+    },
+    {
+      "fieldname": "api_key",
+      "label": "API Key",
+      "fieldtype": "Password",
+      "description": "Enter your API key for cloud providers. Leave blank for local providers."
+    },
+    {
+      "fieldname": "custom_api_base_url",
+      "label": "API Base URL",
+      "fieldtype": "Data",
+      "description": "For Ollama: http://localhost:11434\nFor LM Studio: http://localhost:1234/v1"
+    },
+    {
+      "fieldname": "llm_model",
+      "label": "AI Model",
+      "fieldtype": "Select",
+      "options": "ollama|llama3.2\nollama|llama3.1\nollama|llama3\nollama|phi3\nollama|gemma2\nollama|qwen2.5\nollama|mistral\nollama|qwen2.5:1.5b\nollama|qwen2.5:0.5b\nlm_studio|lmstudio-ai/gemma-2-9b-it-GGUF\nlm_studio|mistralai/Mistral-7B-Instruct-v0.3\nopenrouter|openai/gpt-4o-mini\nopenrouter|openai/gpt-4o\nopenrouter|google/gemini-2.5-flash\nopenrouter|google/gemini-2.5-pro\nopenrouter|anthropic/claude-sonnet-4-20250514\nopenrouter|meta-llama/llama-3.3-70b-instruct\ntogether|meta-llama/Llama-3.3-70B-Instruct-Turbo\ngroq|llama-3.3-70b-versatile\ngroq|llama-3.1-8b-instant\nantropic|claude-sonnet-4-20250514\nantropic|claude-opus-4-20250514\nopenai|gpt-4o-mini\nopenai|gpt-4o\ngemini|gemini-2.5-flash\ngemini|gemini-2.5-pro\nmistral|mistral-large-latest",
+      "default": "ollama|llama3.2",
+      "description": "Select the AI model. List updates when provider changes."
+    }
+  ],
+  "permissions": [
+    {
+      "role": "System Manager",
+      "read": 1,
+      "write": 1
+    }
+  ],
+  "title_field": "",
+  "search_fields": "",
+  "link_filters": [],
+  "section_breaks": [
+    "section_general",
+    "section_llm_provider",
+    "section_models",
+    "section_advanced",
+    "section_features",
+    "section_providers"
+  ],
+  "dashboard": 0
+}

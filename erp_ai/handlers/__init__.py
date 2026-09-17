@@ -22,8 +22,11 @@ def handle_create_item(prompt: str, mcp) -> str:
     if not item_name:
         return "To create an item I need at least a name. Example: 'Add item Steel Rod, group Raw Material, price 100, opening stock 500'"
 
-    from erp_ai.duplication import check_duplicate
-    dup = check_duplicate(mcp, "Item", data)
+    try:
+        from erp_ai.duplication import check_duplicate
+    except ImportError:
+        check_duplicate = None
+    dup = check_duplicate(mcp, "Item", data) if check_duplicate else None
     if dup:
         return "Item '%s' already exists (%s). Use a different name." % (item_name, dup["name"])
 
@@ -55,8 +58,11 @@ def handle_create_customer(prompt: str, mcp) -> str:
     if not name:
         return "Please provide customer name. Example: 'Create customer named ABC Traders'"
 
-    from erp_ai.duplication import check_duplicate
-    dup = check_duplicate(mcp, "Customer", {"customer_name": name})
+    try:
+        from erp_ai.duplication import check_duplicate
+    except ImportError:
+        check_duplicate = None
+    dup = check_duplicate(mcp, "Customer", {"customer_name": name}) if check_duplicate else None
     if dup:
         return "Customer '%s' already exists (%s). Use a different name." % (name, dup["name"])
 
@@ -82,8 +88,11 @@ def handle_create_supplier(prompt: str, mcp) -> str:
     if not name:
         return "Please provide supplier name. Example: 'Create supplier named XYZ Corp'"
 
-    from erp_ai.duplication import check_duplicate
-    dup = check_duplicate(mcp, "Supplier", {"supplier_name": name})
+    try:
+        from erp_ai.duplication import check_duplicate
+    except ImportError:
+        check_duplicate = None
+    dup = check_duplicate(mcp, "Supplier", {"supplier_name": name}) if check_duplicate else None
     if dup:
         return "Supplier '%s' already exists (%s). Use a different name." % (name, dup["name"])
 
