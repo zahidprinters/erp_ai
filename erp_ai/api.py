@@ -36,6 +36,12 @@ from erp_ai.draft_workflow import (
     get_missing_fields,
     get_missing_labels,
 )
+from erp_ai.erp_ai.doctype.ai_user_behavior.ai_user_behavior import (
+    prompt_block as _org_prompt_block,
+)
+from erp_ai.erp_ai.doctype.ai_user_behavior.ai_user_behavior import (
+    record as _record_behavior,
+)
 from erp_ai.handlers import (
     handle_count_query,
     handle_create_customer,
@@ -184,13 +190,16 @@ def _data_answer(prompt):
     q = re.sub(r"[?.,;:!]", " ", prompt.lower())
     for it in _DATA_INTENTS:
         if it["re"].search(q):
-            return _run_intent(it)
+            res = _run_intent(it)
+            res["intent"] = it["name"]
+            return res
     if _COUNT_WORDS.search(q):
         for phrase, dt in sorted(_DATA_WORDS.items(), key=lambda kv: -len(kv[0])):
             if re.search(r"(?<!\w)" + re.escape(phrase) + r"(?!\w)", q):
                 n = _count(dt)
                 if n is not None:
-                    return {"ok": True, "answer": f"There are {n:,} {_plural(n, phrase)}."}
+                    return {"ok": True, "answer": f"There are {n:,} {_plural(n, phrase)}.",
+                            "intent": "count", "target_doctype": dt}
     return {"ok": False}
 
 
@@ -271,11 +280,31 @@ def _assistant_reply(prompt, session=None, model=None):
     history = frappe.get_all("AI Chat Message", filters={"session_id": session, "user": user},
                              fields=["role", "content"], order_by="creation asc", limit_page_length=8)
     mem = "\n".join(f"{m.role}: {m.content}" for m in history)
+    org_block = _org_prompt_block()
+    if org_block:
+        system += f"\n\nOrg usage patterns (behavior-log aggregates):\n{org_block}"
     full_prompt = f"{system}\n\nConversation history:\n{mem}\n\nUser: {prompt}\nAssistant:"
     data = _data_answer(prompt)
     if data.get("ok"):
+        _record_behavior(prompt=prompt, session_id=session, intent=data.get("intent"),
+                         target_doctype=data.get("target_doctype"), outcome="success")
         return data["answer"], session
-    return ask_llm(full_prompt, model=model), session
+    if data.get("intent"):
+        # A data intent matched but declined (permission or query failure):
+        # exactly the org signal worth learning — users asking for what they
+        # cannot read, or reports that keep breaking.
+        _record_behavior(prompt=prompt, session_id=session, intent=data.get("intent"),
+                         target_doctype=data.get("target_doctype"), outcome="failed",
+                         failure_reason="data intent declined")
+    try:
+        reply = ask_llm(full_prompt, model=model)
+    except Exception as e:
+        _record_behavior(prompt=prompt, session_id=session, intent="llm_chat",
+                         outcome="failed", failure_reason=str(e))
+        raise
+    _record_behavior(prompt=prompt, session_id=session, intent="llm_chat",
+                     outcome="success" if reply else "failed")
+    return reply, session
 
 
 @frappe.whitelist()
