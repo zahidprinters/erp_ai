@@ -117,8 +117,7 @@ jobs:
             cd frappe-bench
             # Get ERPNext first - it provides the business DocTypes that erp_ai depends on
             # ERPNext uses version tags (v15.x.x) not a version-15 branch
-            # Use --skip-assets to avoid build issues in CI (redis not configured yet)
-            # Use explicit ./bench path to ensure we use the bench from this directory
+            # Use --skip-assets flag (not --skip-python-byte-compile which doesn't exist)
             ./bench get-app erpnext --branch v15.100.0 --skip-assets
             # Verify erpnext was installed correctly
             python -c "import erpnext; print('erpnext version:', erpnext.__version__)"
