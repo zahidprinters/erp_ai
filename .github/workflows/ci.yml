@@ -67,6 +67,7 @@ jobs:
         run: |
           python -m pytest erp_ai/tests/test_core.py erp_ai/tests/test_security.py \
             erp_ai/tests/test_rbac.py erp_ai/tests/test_knowledge.py erp_ai/tests/test_infra.py \
+            erp_ai/tests/test_ai_user_behavior.py \
             -q -p no:cacheprovider
 
   frappe-tests:
@@ -113,6 +114,7 @@ jobs:
           bench init --skip-redis-config-generation --skip-assets \
             --frappe-branch version-15 frappe-bench
           cd frappe-bench
+          bench get-app erpnext --branch version-15
           cp -r ../erp_ai apps/erp_ai
 
       - name: Create site and install apps
