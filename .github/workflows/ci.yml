@@ -119,7 +119,9 @@ jobs:
             # Install the app under test from the local checkout. get-app is
             # the canonical path: it puts the app in the bench env (so
             # `import erp_ai` resolves) and registers it in sites/apps.txt.
-            bench get-app erp_ai ../erp_ai --skip-assets
+            # The checkout must carry the branch bench clones by name.
+            git -C "$GITHUB_WORKSPACE/erp_ai" checkout -B develop
+            bench get-app erp_ai "$GITHUB_WORKSPACE/erp_ai" --skip-assets
             # bench init points redis at its own default ports (11000/13000/
             # 12000) which nothing listens on here; use the service container.
             bench set-config -g redis_cache redis://localhost:6379
