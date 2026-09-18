@@ -115,6 +115,11 @@ jobs:
           cd frappe-bench
           bench get-app erpnext --branch version-15
           cp -r ../erp_ai apps/erp_ai
+          # bench init points redis at its own default ports (11000/13000/
+          # 12000) which nothing listens on here; use the service container.
+          bench set-config -g redis_cache redis://localhost:6379
+          bench set-config -g redis_queue redis://localhost:6379
+          bench set-config -g redis_socketio redis://localhost:6379
 
       - name: Create site and install apps
         run: |
