@@ -87,3 +87,91 @@ class PatternTests(unittest.TestCase):
         with mock.patch.object(b.frappe, "get_all",
                                side_effect=AssertionError("cache miss: hit the db")):
             self.assertIn("llm_chat", b.prompt_block())  # served from cache
+
+
+class FeedbackTests(unittest.TestCase):
+    """apply_feedback: thumbs-down marks the last turn corrected; up is a no-op."""
+
+    def setUp(self):
+        self._prev = getattr(frappe.local, "session", _UNBOUND)
+        frappe.local.session = SimpleNamespace(user="u1")
+
+    def tearDown(self):
+        try:
+            frappe.local.session = self._prev
+        except Exception:
+            pass
+
+    def test_thumbs_down_marks_last_turn_corrected(self):
+        row = mock.Mock()
+        row.correction_count = 2  # explicit int: int(Mock) would raise
+        with mock.patch.object(b.frappe, "get_all",
+                               return_value=[{"name": "AB-1"}]), \
+                mock.patch.object(b.frappe, "get_doc", return_value=row):
+            out = b.apply_feedback(session_id="s", helpful=0)
+        self.assertEqual(out, {"updated": 1})
+        self.assertEqual(row.outcome, "corrected")
+        self.assertEqual(row.correction_count, 3)
+
+    def test_thumbs_up_needs_no_write(self):
+        with mock.patch.object(b.frappe, "get_all") as ga, \
+                mock.patch.object(b.frappe, "get_doc") as gd:
+            out = b.apply_feedback(session_id="s", helpful=1)
+        self.assertEqual(out, {"updated": 0})
+        ga.assert_not_called()
+        gd.assert_not_called()
+
+    def test_never_raises(self):
+        with mock.patch.object(b.frappe, "get_all",
+                               side_effect=RuntimeError("db down")), \
+                mock.patch.object(b, "log_error_safely") as les:
+            self.assertEqual(b.apply_feedback(session_id="s", helpful=0),
+                             {"updated": 0})
+        les.assert_called_once()
+
+
+class DraftHelpTests(unittest.TestCase):
+    """draft_help_for_repeated_failures: inactive, keyworded, idempotent."""
+
+    def _run(self, failures, get_all_returns, threshold=5):
+        import erp_ai.tasks as tasks
+        from erp_ai.erp_ai.doctype.ai_user_behavior import ai_user_behavior as behavior
+
+        # Patch tasks.frappe wholesale: touching real frappe.db from a bare
+        # test raises "object is not bound" (werkzeug Local proxy unbound).
+        fake = mock.MagicMock()
+        fake.get_all.side_effect = list(get_all_returns)
+        with mock.patch.object(tasks, "frappe", fake), \
+                mock.patch.object(behavior, "get_org_patterns",
+                                  return_value={"failure_intents": failures}):
+            out = tasks.draft_help_for_repeated_failures(threshold=threshold)
+        payloads = [c.args[0] for c in fake.get_doc.call_args_list
+                    if c.args and isinstance(c.args[0], dict)]
+        return out, payloads, fake
+
+    def test_drafts_inactive_keyworded_article(self):
+        out, payloads, fake = self._run(
+            [{"intent": "create_sales_order", "n": 7}],
+            [[], [{"failure_reason": "boom"}]])
+        self.assertEqual(out["drafted"], 1)
+        self.assertEqual(len(payloads), 1)
+        self.assertEqual(payloads[0]["is_active"], 0)   # never auto-published
+        self.assertEqual(payloads[0]["keywords"], "ai-auto:create_sales_order")
+        self.assertIn("create_sales_order", payloads[0]["title"])
+        self.assertIn("boom", payloads[0]["content"])    # raw reason only in body
+        fake.get_doc.return_value.insert.assert_called_once_with(
+            ignore_permissions=True)
+
+    def test_skips_intent_that_already_has_a_draft(self):
+        out, payloads, fake = self._run(
+            [{"intent": "create_sales_order", "n": 7}], [["ART-1"]])
+        self.assertEqual(out["drafted"], 0)
+        self.assertEqual(out["skipped_existing"], 1)
+        fake.get_doc.assert_not_called()                 # no draft inserted
+
+    def test_below_threshold_never_drafts(self):
+        out, payloads, fake = self._run(
+            [{"intent": "llm_chat", "n": 4}], [[], []])
+        self.assertEqual(out["drafted"], 0)
+        fake.get_doc.assert_not_called()
+

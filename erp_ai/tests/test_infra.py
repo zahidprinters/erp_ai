@@ -367,11 +367,16 @@ def test_clean_provider_name_resolves_stored_option_keys(monkeypatch):
 
 
 def test_default_site_configuration_is_valid_and_local(monkeypatch):
-    """The shipped default (llm_provider='ollama') must stay valid."""
+    """Shipped defaults stay valid: the doctype default is the Select's label
+    form (init_singles validates it on fresh installs), and bare keys keep
+    working for older sites (pre-patch storage)."""
     settings = _Settings(llm_provider="ollama", default_llm_model="qwen2.5:1.5b")
     llm = _import_llm(monkeypatch, settings)
 
     assert llm.validate_deployment_settings(settings) is None
+    assert llm.validate_deployment_settings(
+        _Settings(llm_provider="ollama|Ollama (Local - Free)",
+                  default_llm_model="qwen2.5:1.5b")) is None
     assert llm.get_provider_config("ollama")["base_url"].startswith("http://localhost:11434")
 
 

@@ -1,0 +1,66 @@
+{
+ "actions": [],
+ "autoname": "field:intent",
+ "creation": "2026-09-18 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "intent",
+  "use_count",
+  "fail_count",
+  "correction_count",
+  "sample_failure"
+ ],
+ "fields": [
+  {
+   "fieldname": "intent",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Intent",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "use_count",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Uses"
+  },
+  {
+   "default": "0",
+   "fieldname": "fail_count",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Failures"
+  },
+  {
+   "default": "0",
+   "fieldname": "correction_count",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Corrections"
+  },
+  {
+   "fieldname": "sample_failure",
+   "fieldtype": "Small Text",
+   "label": "Sample Failure Reason"
+  }
+ ],
+ "hide_toolbar": 0,
+ "links": [],
+ "module": "ERP AI",
+ "name": "AI Behavior Pattern",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "role": "System Manager"
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "title_field": "intent",
+ "track_changes": 0
+}

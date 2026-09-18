@@ -176,7 +176,7 @@
       "label": "LLM Provider",
       "fieldtype": "Select",
       "options": "ollama|Ollama (Local - Free)\nlm_studio|LM Studio (Local - Free)\nopenrouter|OpenRouter (Cloud - Pay per use)\ntogether|Together AI (Cloud - Pay per use)\ngroq|Groq (Cloud - Fast)\nantropic|Anthropic / Claude (Cloud)\nopenai|OpenAI / GPT (Cloud)\ngemini|Google Gemini (Cloud)\nmistral|Mistral AI (Cloud)\ncustom|Custom OpenAI-compatible API",
-      "default": "ollama",
+      "default": "ollama|Ollama (Local - Free)",
       "reqd": 1,
       "description": "Select the LLM provider. Local providers require no API key."
     },

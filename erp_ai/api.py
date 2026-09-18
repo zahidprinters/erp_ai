@@ -37,6 +37,9 @@ from erp_ai.draft_workflow import (
     get_missing_labels,
 )
 from erp_ai.erp_ai.doctype.ai_user_behavior.ai_user_behavior import (
+    apply_feedback as _apply_feedback,
+)
+from erp_ai.erp_ai.doctype.ai_user_behavior.ai_user_behavior import (
     prompt_block as _org_prompt_block,
 )
 from erp_ai.erp_ai.doctype.ai_user_behavior.ai_user_behavior import (
@@ -314,6 +317,18 @@ def ask(prompt, session=None, model=None):
         frappe.throw("prompt is required")
     reply, _session = _assistant_reply(prompt, session, model)
     return reply
+
+
+@frappe.whitelist()
+def record_feedback(session=None, helpful=None):
+    """Thumb up/down on the assistant's last reply of this session.
+
+    Thumbs-up is a no-op by design (the turn was already recorded as a
+    success); thumbs-down marks the last turn ``corrected`` and increments
+    its correction count — the "users often override this answer" signal
+    that the nightly pattern job turns into pre-emptive guidance.
+    """
+    return _apply_feedback(session or None, helpful)
 
 
 def ask_v2(prompt, session=None, model=None):
@@ -857,7 +872,9 @@ def setup_workspace(**kwargs):
     try:
         if not frappe.db.exists("Page", "ai-assistant"):
             frappe.get_doc({"doctype": "Page", "page_name": "ai-assistant", "module": "ERP AI", "standard": "Yes", "title": "AI Assistant"}).insert()
-        ws_path = pathlib.Path(__file__).resolve().parent / "workspace" / "ai_assistant_hub" / "ai_assistant_hub.json"
+        # Fixture lives in the ERP AI module dir (Frape-standard location),
+        # i.e. <app>/erp_ai/erp_ai/workspace/... — parent is <app>/erp_ai.
+        ws_path = pathlib.Path(__file__).resolve().parent / "erp_ai" / "workspace" / "ai_assistant_hub" / "ai_assistant_hub.json"
         spec = json.loads(ws_path.read_text(encoding="utf-8"))
         content_blocks = json.loads(spec["content"])
         shortcuts_data = spec.get("shortcuts", [])
@@ -1251,7 +1268,9 @@ def list_available_models(provider=None, api_key="", base_url=""):
     if not provider:
         settings = frappe.get_single("AI Settings")
         if settings:
-            provider = (settings.get("llm_provider") or "").strip()
+            # Select stores the full option string ("ollama|Ollama (Local - Free)"):
+            # keep only the key part so both spellings resolve below.
+            provider = (settings.get("llm_provider") or "").split("|", 1)[0].strip()
         else:
             provider = LLMProvider.OLLAMA
     provider = (provider or LLMProvider.OLLAMA).strip().lower()

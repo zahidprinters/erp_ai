@@ -9,7 +9,7 @@ if (!s) { s = Math.random().toString(36).slice(2); localStorage.setItem("ai_sess
 return s;
 }
 
-function bubble(msg, who) {
+function bubble(msg, who, session) {
 const mine = who === "user";
 const ts = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 const row = document.createElement("div");
@@ -21,10 +21,21 @@ const meta = document.createElement("div");
 meta.style.cssText = "font-size:10px;opacity:.6;margin-top:3px;";
 meta.textContent = (mine ? "You" : "AI") + " · " + ts;
 row.appendChild(b); b.appendChild(meta);
+if (!mine && session) {
+const fb = document.createElement("div");
+fb.style.cssText = "font-size:11px;margin-top:2px;";
+const up = document.createElement("span"); up.textContent = "👍"; up.style.cursor = "pointer"; up.title = "Helpful";
+const down = document.createElement("span"); down.textContent = "👎"; down.style.cursor = "pointer"; down.title = "Not helpful";
+const lock = function () { up.style.opacity = ".35"; down.style.opacity = ".35"; up.onclick = down.onclick = null; };
+up.onclick = function () { lock(); frappe.call({ method: "erp_ai.api.record_feedback", args: { session: session, helpful: 1 } }); };
+down.onclick = function () { lock(); frappe.call({ method: "erp_ai.api.record_feedback", args: { session: session, helpful: 0 } }); };
+fb.appendChild(up); fb.appendChild(document.createTextNode(" ")); fb.appendChild(down);
+b.appendChild(fb);
+}
 return row;
 }
 
-function addMsg(container, msg, who) { container.appendChild(bubble(msg, who)); container.scrollTop = container.scrollHeight; }
+function addMsg(container, msg, who, session) { container.appendChild(bubble(msg, who, session)); container.scrollTop = container.scrollHeight; }
 
 function addTyping(container) {
 const t = document.createElement("div");
@@ -43,7 +54,7 @@ const typing = addTyping(container);
 const args = doctype && name ? { doctype: doctype, name: name, prompt: q, session: session } : { prompt: q, session: session };
 const method = doctype && name ? "erp_ai.api.ask_with_doc" : "erp_ai.api.ask_v2_with_voice";
 frappe.call({ method: method, args: args })
-.then(function (r) { typing.remove(); addMsg(container, r.message.response, "ai"); if (r.message.audio_url) { var audio = new Audio(r.message.audio_url); audio.play().catch(function(e) {}); } })
+.then(function (r) { typing.remove(); addMsg(container, r.message.response, "ai", session); if (r.message.audio_url) { var audio = new Audio(r.message.audio_url); audio.play().catch(function(e) {}); } })
 .catch(function (e) { typing.remove(); addMsg(container, "Sorry, an error: " + (e.message || "try again"), "ai"); });
 }
 
@@ -242,7 +253,7 @@ function buildWorkspaceChat(w, mount) {
 	var session = getSession();
 	var curDoc = null;
 
-	function add(who, msg) {
+	function add(who, msg, session) {
 		var row = document.createElement('div');
 		row.style.cssText = 'margin:7px 0';
 		var b = document.createElement('div');
@@ -250,6 +261,17 @@ function buildWorkspaceChat(w, mount) {
 		b.style.cssText = 'padding:8px 11px;border-radius:12px;font-size:13px;line-height:1.5;white-space:pre-wrap;word-break:break-word' + (mine ? ';background:#2490ef;color:#fff;margin-left:auto;display:inline-block' : ';background:var(--control-bg,#eef2f6)');
 		b.textContent = msg;
 		row.appendChild(b);
+		if (!mine && session) {
+			var fb = document.createElement('div');
+			fb.style.cssText = 'font-size:11px;margin-top:2px;';
+			var up = document.createElement('span'); up.textContent = '👍'; up.style.cursor = 'pointer'; up.title = 'Helpful';
+			var down = document.createElement('span'); down.textContent = '👎'; down.style.cursor = 'pointer'; down.title = 'Not helpful';
+			var lock = function () { up.style.opacity = '.35'; down.style.opacity = '.35'; up.onclick = down.onclick = null; };
+			up.onclick = function () { lock(); frappe.call({ method: 'erp_ai.api.record_feedback', args: { session: session, helpful: 1 } }); };
+			down.onclick = function () { lock(); frappe.call({ method: 'erp_ai.api.record_feedback', args: { session: session, helpful: 0 } }); };
+			fb.appendChild(up); fb.appendChild(document.createTextNode(' ')); fb.appendChild(down);
+			b.appendChild(fb);
+		}
 		msgs.appendChild(row);
 		msgs.scrollTop = msgs.scrollHeight;
 	}
@@ -267,7 +289,7 @@ function buildWorkspaceChat(w, mount) {
 		var args = curDoc ? { doctype: curDoc.doctype, name: curDoc.name, prompt: q, session: session } : { prompt: q, session: session };
 		var method = curDoc ? 'erp_ai.api.ask_with_doc' : 'erp_ai.api.ask_v2_with_voice';
 		frappe.call({ method: method, args: args })
-			.then(function (r) { typing.remove(); add("ai", r.message.response); if (r.message.audio_url) { var audio = new Audio(r.message.audio_url); audio.play().catch(function(e) {}); } })
+			.then(function (r) { typing.remove(); add("ai", r.message.response, session); if (r.message.audio_url) { var audio = new Audio(r.message.audio_url); audio.play().catch(function(e) {}); } })
 			.catch(function (e) { typing.remove(); add('ai', 'Sorry, an error: ' + (e.message || 'try again')); });
 	}
 
