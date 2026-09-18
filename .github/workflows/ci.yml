@@ -107,23 +107,25 @@ jobs:
 
       - name: Install bench and Frappe
         run: |
-          pip install frappe-bench --upgrade
-          mkdir -p ~/.ssh
-          ssh-keyscan github.com >> ~/.ssh/known_hosts
-          bench init --skip-redis-config-generation --skip-assets \
-            --frappe-branch version-15 frappe-bench
-          cd frappe-bench
-          bench get-app erpnext --branch version-15
-          cp -r ../erp_ai apps/erp_ai
-          # A copied app dir is neither importable nor registered: a real bench
-          # pip-installs the app and lists it in sites/apps.txt.
-          ./env/bin/pip install -e ./apps/erp_ai
-          grep -qx erp_ai sites/apps.txt || echo erp_ai >> sites/apps.txt
-          # bench init points redis at its own default ports (11000/13000/
-          # 12000) which nothing listens on here; use the service container.
-          bench set-config -g redis_cache redis://localhost:6379
-          bench set-config -g redis_queue redis://localhost:6379
-          bench set-config -g redis_socketio redis://localhost:6379
+          set -o pipefail
+          {
+            pip install frappe-bench --upgrade
+            mkdir -p ~/.ssh
+            ssh-keyscan github.com >> ~/.ssh/known_hosts
+            bench init --skip-redis-config-generation --skip-assets \
+              --frappe-branch version-15 frappe-bench
+            cd frappe-bench
+            bench get-app erpnext --branch version-15
+            # Install the app under test from the local checkout. get-app is
+            # the canonical path: it puts the app in the bench env (so
+            # `import erp_ai` resolves) and registers it in sites/apps.txt.
+            bench get-app erp_ai ../erp_ai --skip-assets
+            # bench init points redis at its own default ports (11000/13000/
+            # 12000) which nothing listens on here; use the service container.
+            bench set-config -g redis_cache redis://localhost:6379
+            bench set-config -g redis_queue redis://localhost:6379
+            bench set-config -g redis_socketio redis://localhost:6379
+          } 2>&1 | tee /tmp/bench.log
 
       - name: Create site and install apps
         run: |
@@ -136,17 +138,19 @@ jobs:
             bench --site test_site migrate
           } 2>&1 | tee /tmp/install.log
 
-      - name: Report install failure (tail as annotation)
-        # Logs need repo auth to read; annotations are public. Surface the tail
-        # of the install output as an annotation so failures are diagnosable.
+      - name: Report failure context (public annotation)
+        # Logs need repo auth to read; annotations are public. Surface the tails
+        # of both risky steps so a failure here is diagnosable without access.
         if: failure()
         run: |
-          if [ -f /tmp/install.log ]; then
-            TAIL=$(tail -c 3000 /tmp/install.log | tr '\n' '~' | sed 's/%/%25/g')
-            echo "::error title=install.log tail::${TAIL}"
-          else
-            echo "::error title=install.log::no install log produced"
-          fi
+          for f in /tmp/bench.log /tmp/install.log; do
+            if [ -f "$f" ]; then
+              TAIL=$(tail -c 2500 "$f" | tr '\n' '~' | sed 's/%/%25/g')
+              echo "::error title=$f tail::${TAIL}"
+            else
+              echo "::error title=$f::not produced"
+            fi
+          done
 
       - name: Run Frappe-backed app tests
         run: |
