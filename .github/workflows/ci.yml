@@ -115,6 +115,9 @@ jobs:
           cd frappe-bench
           bench get-app erpnext --branch version-15
           cp -r ../erp_ai apps/erp_ai
+          # A copied app dir is not importable: a real bench pip-installs each
+          # app, which is what puts `import erp_ai` on the path.
+          ./env/bin/pip install -e ./apps/erp_ai
           # bench init points redis at its own default ports (11000/13000/
           # 12000) which nothing listens on here; use the service container.
           bench set-config -g redis_cache redis://localhost:6379
