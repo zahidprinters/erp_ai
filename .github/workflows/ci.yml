@@ -117,8 +117,8 @@ jobs:
             cd frappe-bench
             # Get ERPNext first - it provides the business DocTypes that erp_ai depends on
             # ERPNext uses version tags (v15.x.x) not a version-15 branch
-            # Use --skip-python-byte-compile and --skip-assets to avoid build issues in CI
-            bench get-app erpnext --branch v15.100.0 --skip-python-byte-compile --skip-assets
+            # Use --skip-assets to avoid build issues in CI (redis not configured yet)
+            bench get-app erpnext --branch v15.100.0 --skip-assets
             # Verify erpnext was installed correctly
             python -c "import erpnext; print('erpnext version:', erpnext.__version__)"
             # Install the app under test from the local checkout. get-app is
@@ -126,7 +126,7 @@ jobs:
             # `import erp_ai` resolves) and registers it in sites/apps.txt.
             # The checkout must carry the branch bench clones by name.
             git -C "$GITHUB_WORKSPACE/erp_ai" checkout -B develop
-            bench get-app erp_ai "$GITHUB_WORKSPACE/erp_ai" --skip-assets --skip-python-byte-compile
+            bench get-app erp_ai "$GITHUB_WORKSPACE/erp_ai" --skip-assets
             # bench init points redis at its own default ports (11000/13000/
             # 12000) which nothing listens on here; use the service container.
             bench set-config -g redis_cache redis://localhost:6379
