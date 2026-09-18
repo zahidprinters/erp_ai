@@ -119,10 +119,25 @@ jobs:
       - name: Create site and install apps
         run: |
           cd frappe-bench
-          bench new-site --mariadb-root-password 123 --admin-password admin \
-            --install-app erpnext --set-default test_site
-          bench --site test_site install-app erp_ai
-          bench --site test_site migrate
+          set -o pipefail
+          {
+            bench new-site --mariadb-root-password 123 --admin-password admin \
+              --install-app erpnext --set-default test_site
+            bench --site test_site install-app erp_ai
+            bench --site test_site migrate
+          } 2>&1 | tee /tmp/install.log
+
+      - name: Report install failure (tail as annotation)
+        # Logs need repo auth to read; annotations are public. Surface the tail
+        # of the install output as an annotation so failures are diagnosable.
+        if: failure()
+        run: |
+          if [ -f /tmp/install.log ]; then
+            TAIL=$(tail -c 3000 /tmp/install.log | tr '\n' '~' | sed 's/%/%25/g')
+            echo "::error title=install.log tail::${TAIL}"
+          else
+            echo "::error title=install.log::no install log produced"
+          fi
 
       - name: Run Frappe-backed app tests
         run: |
