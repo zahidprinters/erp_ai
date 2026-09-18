@@ -115,7 +115,11 @@ jobs:
             bench init --skip-redis-config-generation --skip-assets \
               --frappe-branch version-15 frappe-bench
             cd frappe-bench
-            bench get-app erpnext --branch version-15
+            # Get ERPNext first - it provides the business DocTypes that erp_ai depends on
+            # ERPNext uses version tags (v15.x.x) not a version-15 branch
+            bench get-app erpnext --branch v15.100.0
+            # Verify erpnext was installed correctly
+            python -c "import erpnext; print('erpnext version:', erpnext.__version__)"
             # Install the app under test from the local checkout. get-app is
             # the canonical path: it puts the app in the bench env (so
             # `import erp_ai` resolves) and registers it in sites/apps.txt.
