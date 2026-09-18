@@ -1,3 +1,49 @@
+# ERP AI Release Notes
+
+Changelog for the ERP AI Frappe app. Entries follow [Keep a Changelog](https://keepachangelog.com/)
+style. The latest release is at the bottom of this file.
+
+---
+
+## [Unreleased]
+
+### Added
+- `LICENSE` file (MIT) so GitHub detects the license and the repository is
+  explicitly open-source-friendly for contributions.
+- `CONTRIBUTING.md` describing the Frappe-specific contribution workflow
+  (branch strategy, Ruff linting, security boundaries, testing).
+- `CODE_OF_CONDUCT.md` (Contributor Covenant v2.1).
+- `SECURITY.md` describing the security model and how to report vulnerabilities.
+- GitHub issue templates (`bug_report.md`, `feature_request.md`).
+- Project structure and a table of contents in `README.md`.
+
+### Changed
+- Removed the dead `detect_intent` import from `erp_ai/api.py`.
+- Removed the dead `detect_report`/`_handle_report` call paths from the
+  production flow (`erp_ai/handlers/__init__.py`).
+- Fixed the `knowledge` import in `erp_ai/api.py` to use
+  `erp_ai.knowledge.erpnext_kb` (the module that exists on disk).
+
+### Removed / deleted modules
+The following module packages were deleted on disk and are no longer available.
+Their callers were guarded so the app degrades gracefully:
+- `erp_ai/diagnostics`
+- `erp_ai/duplication`
+- `erp_ai/nlq`
+- `erp_ai/reports`
+
+Both `erp_ai.diagnostics` and `erp_ai.duplication` are imported in
+`try/except ImportError` blocks (`api.py:health()` and the three create handlers)
+so the rest of the app keeps working when those modules are absent.
+
+### Security
+- Confirmed the MCP tool layer still enforces the DocType allowlist and never
+  uses `ignore_permissions=True`.
+- Confirmed public workflow endpoints still return a draft preview and never
+  auto-create/auto-submit financial/stock documents without confirmation.
+
+---
+
 # ERP AI Release Notes - LLM Provider Multi-Support & Admin Settings
 
 ## Release Date: September 2024

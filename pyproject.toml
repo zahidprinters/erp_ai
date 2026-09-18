@@ -6,10 +6,13 @@ authors = [
 description = "Local AI assistant for ERPNext"
 requires-python = ">=3.10"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 dynamic = ["version"]
 dependencies = [
     # "frappe~=15.0.0" # Installed and managed by bench.
 ]
+urls = {Homepage = "https://github.com/zahidprinters/erp_ai", Repository = "https://github.com/zahidprinters/erp_ai.git", Issues = "https://github.com/zahidprinters/erp_ai/issues"}
 
 [build-system]
 requires = ["flit_core >=3.4,<4"]

@@ -1,10 +1,16 @@
-# ERP AI — Local AI Assistant for ERPNext (production hardening)
+# ERP AI — Local AI Assistant for ERPNext (MIT)
 
-An AI assistant (chat + voice) baked into **Frappe Framework v15 / ERPNext v15**.
-It answers questions from real ERP data, guides users through business workflows,
-creates and updates documents through an explicit **preview → confirm** flow,
-and speaks answers aloud in English and Urdu — all running **fully offline** on
-your own server.
+**ERP AI** is a [Frappe Framework](https://frappe.io) v15 / [ERPNext](https://erpnext.com) v15
+app that adds a local-first AI assistant to the Desk: chat, optional voice
+(English / Urdu), guided ERP workflows, and permission-checked document access —
+all running **fully offline** on your own server via Ollama (or any configured
+LLM provider in `AI Settings`).
+
+> This is **not** a SaaS product and **not** a model-training pipeline. The
+> assistant is prompt/tool-driven: it queries real ERP data, follows the bundled
+> ERPNext knowledge base, and routes document writes through an audited
+> **draft → confirm** workflow. Any "learning" happens at the LLM provider level
+> or through knowledge-base articles, not via weight training inside this repo.
 
 This app is intended for a controlled, on-prem environment with a local Ollama
 instance and an optional local voice stack (Whisper.cpp + Piper). The assistant
@@ -13,6 +19,32 @@ user confirmation step, and every operation is recorded in an audit trail with a
 rollback reference.
 
 ---
+
+## 📚 Docs / collaboration
+
+| Resource | Where |
+|---|---|
+| Project tracking / issues | [Issues](https://github.com/zahidprinters/erp_ai/issues) |
+| Contributing guide | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
+| Code of Conduct | [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) |
+| Security policy | [`SECURITY.md`](SECURITY.md) |
+| Changelog | [`RELEASE_NOTES.md`](RELEASE_NOTES.md) |
+| Dead-code cleanup log | [`DEAD_CODE_CLEANUP.md`](DEAD_CODE_CLEANUP.md) |
+
+## Table of contents
+
+- [Quick start](#quick-start)
+- [Usage](#usage)
+- [LLM providers](#llm-providers)
+- [Project structure](#project-structure)
+- [Data model (custom DocTypes)](#data-model-custom-doctypes)
+- [Testing](#testing)
+- [Security](#security)
+- [Troubleshooting](#troubleshooting)
+- [Maintenance](#maintenance)
+- [Compatibility](#compatibility)
+- [Contributing](#contributing)
+- [License](#license)
 
 ## ✨ Capabilities
 
@@ -85,33 +117,38 @@ rollback reference.
 
 ```
 erp_ai/
-├── erp_ai/
-│   ├── api.py                  # Public whitelisted API facade (thin routing layer)
+├── erp_ai/                     # App package (loaded as a Frappe app)
+│   ├── __init__.py             # App version + metadata
+│   ├── hooks.py                # Frappe hooks (assets, doc_events, scheduled hooks)
+│   ├── api.py                  # Public whitelisted API facade (chat, workflows, settings, health)
 │   ├── audit.py                # AI action audit trail (requests, confirmation, results, rollback)
 │   ├── idempotency.py          # Retry-safe writes via AI Assistant Action idempotency_key
 │   ├── draft_workflow.py       # Draft → confirm workflow engine + field extraction
 │   ├── conversation.py         # Guided field-collection conversation
 │   ├── schema/                 # DOCTYPE_SCHEMAS (single source of truth for registry doctypes)
 │   ├── intents/                # Natural-language intent detection (NL → doctype + action)
-│   ├── safety/                 # Safety rules (illegal operations, duplication checks)
+│   ├── safety/                 # Safety rules + guarded import helpers (diagnostics/duplication)
 │   ├── questions/              # Field questions & hints
 │   ├── validators/             # Field input validation
-│   ├── reports/                # Report pattern detection
-│   ├── handlers/               # Document handlers (create/view/print/query) + formatters
+│   ├── handlers/               # Document handler dispatch + formatters
 │   ├── workflows/              # Shipment receipt + stock issue workflow helpers
-│   ├── duplication/            # Duplication detection
 │   ├── rbac/                   # Role-based access control helpers
 │   ├── voice/                  # Whisper.cpp STT + Piper TTS pipeline + toggle + emergency stop
 │   ├── mcp/                    # MCP tool RPC endpoints + FrappeMCP permission-safe tool layer
 │   ├── knowledge/              # ERPNext workflow knowledge base + source citations/freshness
-│   ├── diagnostics/            # App health check
 │   ├── attachments.py          # Upload validation + OCR text extraction (Frappe-managed files only)
 │   ├── barcode.py              # Barcode/QR resolution + checksum validation
 │   ├── evaluation.py           # Model quality evaluation helper
 │   ├── llm/                    # Ollama interface + model allowlist/defaults
-│   ├── doctype/
-│   │   ├── ai_chat_message/    # Conversation history storage
-│   │   └── ai_assistant_action/# Draft action lifecycle (pending → confirm/expire/failed/audit)
+│   ├── erp_ai/                 # Nested package: DocTypes, Pages, Workspaces
+│   │   ├── doctype/
+│   │   │   ├── ai_assistant_action/
+│   │   │   ├── ai_chat_message/    # Conversation history storage
+│   │   │   ├── ai_help_article/    # Curated help/knowledge articles
+│   │   │   └── ai_settings/        # Provider selection, API keys, feature toggles
+│   │   ├── page/
+│   │   └── workspace/
+│   │       └── ai_assistant_hub/   # Embedded workspace chat + help
 │   └── tests/                  # pytest suites (database-free + Frappe-backed integration)
 │       ├── test_core.py        # schema, intents, safety, validators, questions
 │       ├── test_security.py    # prompt injection, input validation, draft/confirm/rollback contracts
@@ -560,4 +597,10 @@ For 7b models you'd want 16 GB+ RAM; 1.5b runs fine here.
 ---
 
 ## 📄 License
-MIT
+
+Distributed under the **MIT License**. See [`LICENSE`](LICENSE).
+
+This is a local Frappe app — MIT covers the code in this repository only and
+does **not** apply to your ERP data, your ERPNext instance, or any models
+running behind a provider (e.g. Ollama, OpenRouter, OpenAI). Your ERPNext data
+remains governed by your own environment and data policies.
