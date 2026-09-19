@@ -163,4 +163,5 @@ jobs:
       - name: Run Frappe-backed app tests
         run: |
           cd frappe-bench
+          ./env/bin/pip install pytest
           bench --site test_site run-tests --app erp_ai
