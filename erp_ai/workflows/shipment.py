@@ -20,7 +20,7 @@ def handle_shipment_nl(text: str, mcp) -> Dict[str, Any]:
         vehicle = m.group(1).strip()
 
     items = []
-    for m in re.finditer(r"([0-9][0-9,.]*)\s*(?:pcs|pieces|nos|units|kg|boxes|sets)?\s+([A-Za-z][A-Za-z0-9 -]{2,40}?)(?=\s+(?:arriv|from|to|in|,|\.)|,|\.|$)", text, re.I):
+    for m in re.finditer(r"([0-9][0-9,.]*)\s*(?:x|×)?\s*(?:pcs|pieces|nos|units|kg|boxes|sets)?\s+([A-Za-z][A-Za-z0-9 -]{2,40}?)(?=\s+(?:arriv|from|to|in|at|,|\.)|,|\.|$)", text, re.I):
         name = m.group(2).strip()
         try:
             q = float(m.group(1).replace(",", ""))
@@ -52,7 +52,13 @@ def handle_shipment_nl(text: str, mcp) -> Dict[str, Any]:
     from erp_ai.schema import resolve_warehouse
 
     warehouse = None
-    m = re.search(r"(?:to|into|in)\s+([A-Za-z0-9 -]{2,40}?)(?:\s+warehouse|\s+store)?(?=\s+(?:arriv|from|vehicle)|,|\.|$)", text, re.I)
+    m = re.search(
+        r"(?:to|into|in|at)\s+(?:(?:the\s+)?(?:warehouse|store|godown)\s+)?"
+        r"([A-Za-z0-9 -]{2,40}?)(?:\s+(?:warehouse|store|godown))?"
+        r"(?=\s+(?:arriv|from|vehicle)|,|\.|$)",
+        text,
+        re.I,
+    )
     if m:
         warehouse = resolve_warehouse(mcp, m.group(1).strip())
     if not warehouse:
@@ -108,7 +114,14 @@ def create_shipment_receipt(data: Dict[str, Any], mcp) -> Dict[str, Any]:
 
     warehouse = data.get("warehouse") or resolve_warehouse(mcp)
     if not warehouse:
-        warehouse = "Stores - SPI" if frappe.db.exists("Warehouse", "Stores - SPI") else "Stores"
+        # No warehouse resolved: use the default company's first leaf warehouse
+        # instead of a site-specific literal name.
+        company = frappe.defaults.get_global_default("company")
+        warehouse = (
+            frappe.db.get_value("Warehouse", {"is_group": 0, "company": company}, "name")
+            if company
+            else None
+        )
 
     # Validate items exist; create if missing
     for it in items:
@@ -139,8 +152,10 @@ def create_shipment_receipt(data: Dict[str, Any], mcp) -> Dict[str, Any]:
         "price_list_currency": currency,
         "exchange_rate": exchange_rate,
         "conversion_rate": exchange_rate,
+        # Purchase Receipt Item names the target field "warehouse" — "t_warehouse"
+        # is the Stock Entry Detail field (used by the fallback below).
         "items": [{"item_code": it["item_code"], "qty": it.get("qty", 0),
-                    "rate": it.get("rate", 0), "t_warehouse": warehouse} for it in items],
+                    "rate": it.get("rate", 0), "warehouse": warehouse} for it in items],
         "remarks": remarks,
     }
     # Fail early on live-metadata mandatory fields (including Custom Fields and

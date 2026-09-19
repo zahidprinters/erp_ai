@@ -1188,6 +1188,14 @@ def _create_purchase_receipt_doc(data, mcp):
                 {k: v for k, v in row.items() if k in allowed_child and v not in (None, "")}
                 for row in rows
             ]
+            # Workflow drafts (e.g. "received 2 x SKU at warehouse X") carry the
+            # target warehouse at the top level, but a Purchase Receipt stores it
+            # on each row — push it down when the row omits it, or ERPNext
+            # rejects the row with "Warehouse is mandatory for stock Item".
+            top_warehouse = data.get("warehouse")
+            if top_warehouse:
+                for row in doc_data[child["fieldname"]]:
+                    row.setdefault("warehouse", top_warehouse)
     # Ensure supplier exists
     supplier = doc_data.get("supplier")
     if supplier:

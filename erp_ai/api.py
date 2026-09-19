@@ -760,9 +760,16 @@ def save_shipment_draft(session, user, data):
         "supplier": data.get("supplier", ""),
         "vehicle_no": data.get("vehicle_no", ""),
         "items": data.get("items", []),
-        "warehouse": data.get("warehouse", ""),
         "remarks": data.get("remarks", ""),
     }
+    # A Purchase Receipt carries its warehouse on each item row, so the
+    # resolved one must be pushed down here: create_draft normalizes the
+    # payload against the DocType schema, which has no top-level warehouse,
+    # and would otherwise strip it before confirmation.
+    warehouse = data.get("warehouse") or ""
+    for item in draft_data["items"]:
+        if isinstance(item, dict) and not item.get("warehouse"):
+            item["warehouse"] = warehouse
 
     draft = create_draft(
         session=session,

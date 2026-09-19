@@ -7,11 +7,12 @@ and ~14 tests fail with LinkValidationError / "Missing required fields".
 
 Run from CI right after site creation (idempotent — safe to re-run):
 
-    ./env/bin/python -m erp_ai.tests.ci_seed   # from the bench directory
+    ./env/bin/python -m erp_ai.tests.ci_seed   # SITE env var picks the site
 """
 import os
 
 import frappe
+from frappe.utils import get_bench_path
 
 COMPANY = "Test CI Company"
 CURRENCY = "INR"
@@ -69,6 +70,9 @@ def seed():
     # 5. Country (Company.validate requires one) + Company + global defaults.
     #    draft_workflow resolves "company" via
     #    frappe.defaults.get_global_default("company") — i.e. Global Defaults.
+    #    Company.on_update -> create_default_warehouses() inserts a "Goods In
+    #    Transit" warehouse typed "Transit", so that fixture must exist first.
+    _insert_if_missing("Warehouse Type", "Transit", {"name": "Transit"})
     _insert_if_missing("Country", "Pakistan", {
         "country_name": "Pakistan", "code": "PK",
         "date_format": "dd-mm-yyyy", "time_format": "HH:mm:ss",
@@ -78,10 +82,13 @@ def seed():
         "company_name": COMPANY, "abbr": "TCI",
         "default_currency": CURRENCY, "country": "Pakistan",
     })
+    # get_global_default() reads DefaultValue rows, not the Global Defaults
+    # single (set_single_value bypasses the doctype's sync), so write both.
     frappe.db.set_single_value("Global Defaults", "default_company", COMPANY)
-    frappe.db.set_single_value("Global Defaults", "default_currency", CURRENCY)
+    frappe.defaults.set_global_default("company", COMPANY)
     if not frappe.db.get_single_value("Global Defaults", "country"):
         frappe.db.set_single_value("Global Defaults", "country", "Pakistan")
+        frappe.defaults.set_global_default("country", "Pakistan")
 
     # 6. Warehouses: a group plus the leaf names the tests resolve against
     #    ("Raw Materials" in the receipt flow; any leaf for stock tests).
@@ -116,7 +123,13 @@ def seed():
 
 if __name__ == "__main__":
     site = os.environ.get("SITE", "test_site")
-    frappe.init(site=site, sites_path="sites")
+    # frappe's log handlers open cwd-relative paths ("../logs/<module>.log" for
+    # the bench log, "<site>/logs/<module>.log" for the site log), and `bench`
+    # runs site code from the bench's sites/ directory. Match that, or init
+    # fails with FileNotFoundError before a single master is seeded.
+    sites_path = os.path.join(get_bench_path(), "sites")
+    os.chdir(sites_path)
+    frappe.init(site=site, sites_path=sites_path)
     frappe.connect()
     try:
         seed()
