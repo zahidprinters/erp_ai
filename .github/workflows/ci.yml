@@ -150,6 +150,15 @@ jobs:
           cd frappe-bench
           set -o pipefail
           {
+            # bench get-app clones the app into apps/ but does not register it in
+            # the site's apps.txt. The "Create site" step installed erpnext via
+            # --install-app, so apps.txt currently only lists frappe + erpnext.
+            # Ensure erp_ai is registered before install-app runs, otherwise
+            # bench raises "App erp_ai not in apps.txt".
+            SITE_APPS="$(pwd)/sites/test_site/apps.txt"
+            if ! grep -q '^erp_ai$' "$SITE_APPS"; then
+              echo "erp_ai" >> "$SITE_APPS"
+            fi
             bench --site test_site install-app erp_ai
           } 2>&1 | tee -a /tmp/install.log
 
