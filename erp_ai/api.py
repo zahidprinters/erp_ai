@@ -3,8 +3,7 @@
 #
 # Thin routing layer. All real logic lives in focused modules:
 #   llm/ schema/ intents/ safety/ questions/ validators/
-#   reports/ duplication/ handlers/ workflows/ voice/
-#   conversation/ mcp/ knowledge/
+#   workflows/ handlers/ voice/ conversation/ mcp/ knowledge/ rbac/
 # ---------------------------------------------------------------------------
 import json
 import os
@@ -58,7 +57,8 @@ from erp_ai.llm import ask_llm, ask_ollama
 from erp_ai.mcp.server import FrappeMCP
 from erp_ai.safety import check_illegal_operation
 from erp_ai.schema import DOCTYPE_SCHEMAS, get_all_doctypes, get_schema
-from erp_ai.voice import text_to_speech, voice_to_text
+from erp_ai.voice import text_to_speech
+from erp_ai.voice import voice_to_text as _transcribe_audio
 from erp_ai.workflows.shipment import handle_shipment_nl
 from erp_ai.workflows.stock_issue import handle_issue_nl
 
@@ -632,6 +632,25 @@ def ask_v2_with_voice(prompt, session=None, model=None, voice=True):
     return {"response": response_text, "session": result.get("session"), "audio_url": audio_url}
 
 
+@frappe.whitelist()
+def voice_to_text(audio, fmt="webm"):
+    """Whisper.cpp speech-to-text over HTTP.
+
+    The chat widget records with MediaRecorder and posts the audio as a
+    base64 string; the internal helper takes raw bytes, so decode here and
+    delegate (format/size limits are enforced by the helper).
+    """
+    import base64
+
+    if not audio:
+        return {"error": "No audio provided"}
+    try:
+        audio_bytes = base64.b64decode(audio, validate=True)
+    except Exception:
+        return {"error": "Invalid audio payload (expected base64)"}
+    return _transcribe_audio(audio_bytes, fmt)
+
+
 # ---------------------------------------------------------------------------
 # Workflow endpoints - NOW routed through preview/confirmation flow
 # ---------------------------------------------------------------------------
@@ -808,12 +827,17 @@ def save_stock_issue_draft(session, user, data):
     return draft.get("name") if isinstance(draft, dict) else None
 
 
+@frappe.whitelist()
 def confirm_workflow_action(action_id, user, data=None):
-    """Confirm a workflow action and execute it through the draft engine.
+    """Confirm (create) a pending workflow action over HTTP.
 
     This is the public confirm/cancel boundary; it delegates to
     ``erp_ai.draft_workflow.confirm_draft`` so the finalisation path
     (pending -> processing -> completed/failed) and audit writes stay centralized.
+
+    Over HTTP the caller's own session is the binding: ``confirm_draft``
+    rejects actions owned by another user or created in another session, so a
+    draft can only be confirmed by the user who created it, in that session.
     """
 
     confirm_result = confirm_draft(
@@ -831,6 +855,7 @@ def confirm_workflow_action(action_id, user, data=None):
     return confirm_result
 
 
+@frappe.whitelist()
 def cancel_workflow_action(action_id, user):
     """Cancel a pending workflow action.
 
@@ -1001,14 +1026,21 @@ def voice_set(enabled):
 # ---------------------------------------------------------------------------
 @frappe.whitelist()
 def health():
-    """Run a comprehensive app health check."""
-    try:
-        from erp_ai.diagnostics import health_check
-    except ImportError:
-        health_check = None
-    if health_check:
-        return health_check()
-    return {"status": "ok", "note": "diagnostics module not available"}
+    """Lightweight app health check: configured LLM provider + voice runtime."""
+    import os
+
+    from erp_ai.llm import get_llm_settings
+    from erp_ai.voice import _ai_home
+
+    provider = get_llm_settings().llm_provider or "Ollama (Local)"
+    return {
+        "status": "ok",
+        "llm_provider": provider,
+        "voice_runtime": os.path.exists(
+            os.path.join(_ai_home(), "whisper.cpp/build/bin/whisper-cli")
+        ),
+        "site": frappe.local.site,
+    }
 
 
 # ---------------------------------------------------------------------------
