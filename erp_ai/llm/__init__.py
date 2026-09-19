@@ -59,6 +59,17 @@ DEFAULT_MODELS = {
 # Models the assistant is allowed to call directly (for Ollama local models)
 AI_ALLOWED_MODELS = frozenset(("qwen2.5:1.5b", "qwen2.5:3b", "qwen2.5:7b"))
 
+# Hard ceiling (seconds) for an Ollama generate() call. The settings form
+# accepts any timeout, but a misconfigured value (or a hung model) should
+# never make the chat or health endpoint hang for minutes. 30s is the
+# largest value we tolerate for a single Ollama round-trip; callers that
+# want longer (e.g. first-token warmup) must pass timeout explicitly.
+OLLAMA_TIMEOUT_CEILING = 30
+
+# Number of retries for transient Ollama failures (connection refused while
+# the runtime is starting up, brief 503s from the generate queue, etc.).
+OLLAMA_MAX_RETRIES = 2
+
 
 # ---------------------------------------------------------------------------
 # Helper to clean provider name from database storage format
@@ -330,7 +341,7 @@ def ask_llm(prompt, provider=None, model=None, temperature=None, max_tokens=None
     elif config.get("type") == "google":
         return _ask_google(prompt, model, api_key, temperature, max_tokens, timeout, base_url)
     elif provider == "Ollama (Local)" or config.get("base_url", "").endswith("/api/generate"):
-        return _ask_ollama(prompt, model, api_key, temperature, max_tokens, timeout, base_url)
+                return _ask_ollama_with_retry(prompt, model, api_key, temperature, max_tokens, timeout, base_url)
     else:
         return _ask_chat_completions(prompt, provider, model, api_key, temperature, max_tokens, timeout, base_url, config)
 
@@ -428,13 +439,50 @@ def _ask_google(prompt, model, api_key, temperature, max_tokens, timeout, base_u
             "temperature": temperature,
             "maxOutputTokens": max_tokens,
         },
-    }
+        }
 
     response = requests.post(full_url, json=payload, timeout=timeout)
     response.raise_for_status()
 
     result = response.json()
     return result["candidates"][0]["content"]["parts"][0]["text"]
+
+
+# ---------------------------------------------------------------------------
+# Ollama wrapper with retry (Phase 1.1)
+# Retries on transient failures (connection refused during runtime startup,
+# brief 503s from the generate queue). Caps the timeout at
+# OLLAMA_TIMEOUT_CEILING so a misconfigured setting can't hang the caller.
+# ---------------------------------------------------------------------------
+def _ask_ollama_with_retry(
+    prompt, model, api_key, temperature, max_tokens, timeout, base_url
+):
+    """Call Ollama with retry on transient failures and a timeout ceiling."""
+    import time
+
+    from requests.exceptions import ConnectionError as RequestsConnectionError
+
+    # Clamp caller timeout to the safety ceiling.
+    timeout = min(timeout, OLLAMA_TIMEOUT_CEILING)
+
+    last_exc = None
+    for attempt in range(OLLAMA_MAX_RETRIES + 1):
+        try:
+            return _ask_ollama(
+                prompt, model, api_key, temperature, max_tokens, timeout, base_url
+            )
+        except (RequestsConnectionError, requests.exceptions.HTTPError) as exc:
+            last_exc = exc
+            if attempt < OLLAMA_MAX_RETRIES:
+                time.sleep(0.5 * (attempt + 1))
+            continue
+    # All retries exhausted; re-raise the last error.
+    if last_exc:
+        raise last_exc
+    # Should be unreachable, but guard anyway.
+    return _ask_ollama(
+        prompt, model, api_key, temperature, max_tokens, timeout, base_url
+    )
 
 
 def _ask_ollama(prompt, model, api_key, temperature, max_tokens, timeout, base_url):

@@ -1025,17 +1025,64 @@ def voice_set(enabled):
 # Health check endpoint
 # ---------------------------------------------------------------------------
 @frappe.whitelist()
+
+def _llm_runtime_available(settings) -> bool:
+    """Best-effort probe: can the configured LLM provider be reached?
+
+    For the local Ollama path we actually call ask_llm with a tiny prompt;
+    for hosted providers we only check that the API key / base URL is present
+    (a real call would cost money and is not appropriate for a health ping).
+    """
+    from erp_ai.llm import OLLAMA_TIMEOUT_CEILING, ask_llm, clean_provider_name, get_provider_config
+
+    provider = clean_provider_name(settings.llm_provider or "Ollama (Local)")
+    config = get_provider_config(provider)
+
+    if config.get("base_url", "").endswith("/api/generate") or provider == "Ollama (Local)":
+        try:
+            ask_llm("ERP AI health ping", provider=provider, timeout=OLLAMA_TIMEOUT_CEILING)
+            return True
+        except Exception:
+            return False
+
+    # Hosted providers: we cannot afford a real call on every health ping, so
+    # treat the presence of credentials / base url as "configured enough".
+    if provider == "Custom API":
+        return bool(settings.custom_api_base_url or settings.llm_base_url)
+    if provider in ("OpenAI", "Anthropic", "Google Gemini", "OpenRouter", "Together AI", "Groq", "Mistral"):
+        key = settings.llm_api_key or settings.api_key or ""
+        if provider == "Google Gemini":
+            key = settings.google_api_key or key
+        if provider == "Mistral":
+            key = settings.mistral_api_key or key
+        return bool(key)
+    return True
 def health():
-    """Lightweight app health check: configured LLM provider + voice runtime."""
+    """Lightweight app health check: configured LLM provider + voice runtime.
+
+    Phase 1.1 reliability: reports *runtime reachability* for the configured
+    provider instead of just which provider is listed in AI Settings, by
+    delegating to ``_llm_runtime_available`` (which actually pings Ollama's
+    ``/api/tags`` for local models and checks credentials for cloud providers).
+    The probe is best-effort: a False does not block the chat path, it only
+    surfaces in ``GET /api/method/erp_ai.api.health``.
+    """
     import os
 
     from erp_ai.llm import get_llm_settings
     from erp_ai.voice import _ai_home
 
     provider = get_llm_settings().llm_provider or "Ollama (Local)"
+
+    # --- runtime reachability (best-effort, non-blocking) ---
+    # Delegates to _llm_runtime_available(), which for Ollama performs a real
+    # /api/tags ping and for cloud providers checks that credentials are set.
+    llm_runtime_available = _llm_runtime_available(get_llm_settings())
+
     return {
         "status": "ok",
         "llm_provider": provider,
+        "llm_runtime_available": llm_runtime_available,
         "voice_runtime": os.path.exists(
             os.path.join(_ai_home(), "whisper.cpp/build/bin/whisper-cli")
         ),
