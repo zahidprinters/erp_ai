@@ -7,8 +7,10 @@ and ~14 tests fail with LinkValidationError / "Missing required fields".
 
 Run from CI right after site creation (idempotent — safe to re-run):
 
-    bench --site test_site execute erp_ai.tests.ci_seed.seed
+    ./env/bin/python -m erp_ai.tests.ci_seed   # from the bench directory
 """
+import os
+
 import frappe
 
 COMPANY = "Test CI Company"
@@ -110,3 +112,13 @@ def seed():
     })
 
     frappe.db.commit()
+
+
+if __name__ == "__main__":
+    site = os.environ.get("SITE", "test_site")
+    frappe.init(site=site, sites_path="sites")
+    frappe.connect()
+    try:
+        seed()
+    finally:
+        frappe.destroy()

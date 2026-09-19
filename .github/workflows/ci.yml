@@ -154,7 +154,7 @@ jobs:
           cd frappe-bench
           set -o pipefail
           {
-            bench --site test_site execute erp_ai.tests.ci_seed.seed
+            ./env/bin/python -m erp_ai.tests.ci_seed
           } 2>&1 | tee /tmp/seed.log
 
       - name: Report failure context (public annotation)
