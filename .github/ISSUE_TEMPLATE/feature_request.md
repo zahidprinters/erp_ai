@@ -1,40 +1,29 @@
+---
 name: Feature request
-about: Suggest a feature for ERP AI
-title: '[feature]'
+about: Suggest an idea or improvement
+title: ''
 labels: enhancement
-body:
-  - type: markdown
-    attributes:
-      value: |
-        Thanks for the suggestion. Please describe what you want and why.
-        If this is a security issue, see SECURITY.md.
-  - type: textarea
-    id:problem
-    attributes:
-      label: Problem
-      description: What are you trying to do? What is hard right now?
-    validations:
-      required: true
-  - type: textarea
-    id:solution
-    attributes:
-      label: Proposed solution
-      description: How should this work? Include example prompts/API calls if relevant.
-    validations:
-      required: true
-  - type: textarea
-    id:alternatives
-    attributes:
-      label: Alternatives
-      description: What else did you consider?
-      render: markdown
-    validations:
-      required: false
-  - type: textarea
-    id:context
-    attributes:
-      label: Additional context
-      description: Anything else (links, related issues, security impact, etc.).
-      render: markdown
-    validations:
-      required: false
+assignees: ''
+
+---
+
+## Is your feature request related to a problem?
+
+Please describe. (e.g. "I'm always frustrated when \dots")
+
+## Describe the solution you'd like
+
+A clear and concise description of what you want to happen.
+
+## Describe alternatives you've considered
+
+A clear and concise description of any alternative solutions or features you've considered.
+
+## Additional context
+
+Add any other context or screenshots about the feature request here.
+
+## Related
+
+- [ROADMAP.md](../ROADMAP.md) — planned work and phases
+- [CHANGELOG.md](../CHANGELOG.md) — recent changes

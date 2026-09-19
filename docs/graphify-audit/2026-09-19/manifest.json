@@ -1,0 +1,488 @@
+{
+  "erp_ai/__init__.py": {
+    "mtime": 1788766152.8112285,
+    "seen": 1789803376.0139182,
+    "ast_hash": "031d2b105914bd41498040b838c6e3b1",
+    "semantic_hash": "031d2b105914bd41498040b838c6e3b1"
+  },
+  "erp_ai/api.py": {
+    "mtime": 1789800596.696328,
+    "seen": 1789803376.013923,
+    "ast_hash": "08072e2a2a52b7a6ee45d0d948dccfb9",
+    "semantic_hash": "08072e2a2a52b7a6ee45d0d948dccfb9"
+  },
+  "erp_ai/attachments.py": {
+    "mtime": 1789626067.4471054,
+    "seen": 1789803376.013925,
+    "ast_hash": "841f6b67405115c99823edef3f83773b",
+    "semantic_hash": "841f6b67405115c99823edef3f83773b"
+  },
+  "erp_ai/audit.py": {
+    "mtime": 1789622643.8125527,
+    "seen": 1789803376.0139275,
+    "ast_hash": "2279cf8e0233a201db8e36122522e86f",
+    "semantic_hash": "2279cf8e0233a201db8e36122522e86f"
+  },
+  "erp_ai/barcode.py": {
+    "mtime": 1789128167.536516,
+    "seen": 1789803376.0139303,
+    "ast_hash": "738e438fd43706112c9c4c163b3695c6",
+    "semantic_hash": "738e438fd43706112c9c4c163b3695c6"
+  },
+  "erp_ai/conversation.py": {
+    "mtime": 1789128303.8227944,
+    "seen": 1789803376.0139318,
+    "ast_hash": "9496d97ec2906695a299f9b621aca3ca",
+    "semantic_hash": "9496d97ec2906695a299f9b621aca3ca"
+  },
+  "erp_ai/draft_workflow.py": {
+    "mtime": 1789797773.8865755,
+    "seen": 1789803376.013935,
+    "ast_hash": "229037e45d1043d55ce034c20704b394",
+    "semantic_hash": "229037e45d1043d55ce034c20704b394"
+  },
+  "erp_ai/erp_ai/__init__.py": {
+    "mtime": 1788769026.9335656,
+    "seen": 1789803376.0139601,
+    "ast_hash": "d9e09fb2a9f70151e552fcdb75f08817",
+    "semantic_hash": "d9e09fb2a9f70151e552fcdb75f08817"
+  },
+  "erp_ai/erp_ai/doctype/ai_assistant_action/__init__.py": {
+    "mtime": 1788946828.0118797,
+    "seen": 1789803376.0139627,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "erp_ai/erp_ai/doctype/ai_assistant_action/ai_assistant_action.json": {
+    "mtime": 1789205690.1443772,
+    "seen": 1789803376.013965,
+    "ast_hash": "0dc33a2d67585ccee040c1218341c5a0",
+    "semantic_hash": "0dc33a2d67585ccee040c1218341c5a0"
+  },
+  "erp_ai/erp_ai/doctype/ai_assistant_action/ai_assistant_action.py": {
+    "mtime": 1789530548.0555394,
+    "seen": 1789803376.013967,
+    "ast_hash": "d6d61a9fb26ca94ce59e5881d08e6ad9",
+    "semantic_hash": "d6d61a9fb26ca94ce59e5881d08e6ad9"
+  },
+  "erp_ai/erp_ai/doctype/ai_behavior_pattern/ai_behavior_pattern.json": {
+    "mtime": 1789707026.0724719,
+    "seen": 1789803376.0139687,
+    "ast_hash": "3642d857f111b53667e784f006b73aa5",
+    "semantic_hash": "3642d857f111b53667e784f006b73aa5"
+  },
+  "erp_ai/erp_ai/doctype/ai_behavior_pattern/ai_behavior_pattern.py": {
+    "mtime": 1789711804.0086968,
+    "seen": 1789803376.0139716,
+    "ast_hash": "c9365ac48a79b1f48ae0568d18236dc7",
+    "semantic_hash": "c9365ac48a79b1f48ae0568d18236dc7"
+  },
+  "erp_ai/erp_ai/doctype/ai_chat_message/__init__.py": {
+    "mtime": 1788767969.9427307,
+    "seen": 1789803376.013973,
+    "ast_hash": "1072f725f8f28be500615ba5151a4370",
+    "semantic_hash": "1072f725f8f28be500615ba5151a4370"
+  },
+  "erp_ai/erp_ai/doctype/ai_chat_message/ai_chat_message.json": {
+    "mtime": 1788769940.9311311,
+    "seen": 1789803376.0139747,
+    "ast_hash": "247d80cd70b53c42fc8ec6976b5b1642",
+    "semantic_hash": "247d80cd70b53c42fc8ec6976b5b1642"
+  },
+  "erp_ai/erp_ai/doctype/ai_chat_message/ai_chat_message.py": {
+    "mtime": 1788767971.7867413,
+    "seen": 1789803376.0139766,
+    "ast_hash": "d40a26cc973782e965fdb85aba76d438",
+    "semantic_hash": "d40a26cc973782e965fdb85aba76d438"
+  },
+  "erp_ai/erp_ai/doctype/ai_help_article/__init__.py": {
+    "mtime": 1789210484.8255575,
+    "seen": 1789803376.0139778,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "erp_ai/erp_ai/doctype/ai_help_article/ai_help_article.json": {
+    "mtime": 1789212000.0369434,
+    "seen": 1789803376.0139797,
+    "ast_hash": "72555b245ce81b212deadf6793ce3d62",
+    "semantic_hash": "72555b245ce81b212deadf6793ce3d62"
+  },
+  "erp_ai/erp_ai/doctype/ai_help_article/ai_help_article.py": {
+    "mtime": 1789210459.8575714,
+    "seen": 1789803376.0139813,
+    "ast_hash": "1c6d1e99f79c3df161af60c1f398f2c1",
+    "semantic_hash": "1c6d1e99f79c3df161af60c1f398f2c1"
+  },
+  "erp_ai/erp_ai/doctype/ai_settings/ai_settings.json": {
+    "mtime": 1789710396.6656537,
+    "seen": 1789803376.0139837,
+    "ast_hash": "9c35138d8fd81226abc21d6294b82116",
+    "semantic_hash": "9c35138d8fd81226abc21d6294b82116"
+  },
+  "erp_ai/erp_ai/doctype/ai_settings/ai_settings.py": {
+    "mtime": 1789627238.009104,
+    "seen": 1789803376.0139844,
+    "ast_hash": "d5efc6ffd51c4c3120cf25ff1a7778d5",
+    "semantic_hash": "d5efc6ffd51c4c3120cf25ff1a7778d5"
+  },
+  "erp_ai/erp_ai/doctype/ai_user_behavior/ai_user_behavior.json": {
+    "mtime": 1789704335.2390995,
+    "seen": 1789803376.013986,
+    "ast_hash": "62f3cb5b44d63fcfc9a909c03854d507",
+    "semantic_hash": "62f3cb5b44d63fcfc9a909c03854d507"
+  },
+  "erp_ai/erp_ai/doctype/ai_user_behavior/ai_user_behavior.py": {
+    "mtime": 1789707251.7507694,
+    "seen": 1789803376.0139894,
+    "ast_hash": "7ffec518b6d29bdaa9fa56c8b76054d8",
+    "semantic_hash": "7ffec518b6d29bdaa9fa56c8b76054d8"
+  },
+  "erp_ai/erp_ai/page/ai_assistant/__init__.py": {
+    "mtime": 1788768082.779369,
+    "seen": 1789803376.0139933,
+    "ast_hash": "b06062f33eac04633565ae069f4e5386",
+    "semantic_hash": "b06062f33eac04633565ae069f4e5386"
+  },
+  "erp_ai/erp_ai/page/ai_assistant/ai_assistant.js": {
+    "mtime": 1788778324.5226414,
+    "seen": 1789803376.0139961,
+    "ast_hash": "b513de29616e70e1fc7ecd6c6568d8d7",
+    "semantic_hash": "b513de29616e70e1fc7ecd6c6568d8d7"
+  },
+  "erp_ai/erp_ai/page/ai_assistant/ai_assistant.json": {
+    "mtime": 1788768034.6990993,
+    "seen": 1789803376.0139987,
+    "ast_hash": "90c30994ab1747954a9d0770d07f30d4",
+    "semantic_hash": "90c30994ab1747954a9d0770d07f30d4"
+  },
+  "erp_ai/erp_ai/workspace/ai_assistant_hub/ai_assistant_hub.json": {
+    "mtime": 1789711577.2027495,
+    "seen": 1789803376.0140016,
+    "ast_hash": "a7538d64daba9435cfe2bd1ae0ff885a",
+    "semantic_hash": "a7538d64daba9435cfe2bd1ae0ff885a"
+  },
+  "erp_ai/erp_tools.py": {
+    "mtime": 1789629906.6848369,
+    "seen": 1789803376.0140042,
+    "ast_hash": "7f8bee704f18f9f8afecf7f911b94da8",
+    "semantic_hash": "7f8bee704f18f9f8afecf7f911b94da8"
+  },
+  "erp_ai/evaluation.py": {
+    "mtime": 1789128167.536516,
+    "seen": 1789803376.0140073,
+    "ast_hash": "3f12b456f653787cda2d1cc7792bd166",
+    "semantic_hash": "3f12b456f653787cda2d1cc7792bd166"
+  },
+  "erp_ai/handlers/__init__.py": {
+    "mtime": 1789644247.6728637,
+    "seen": 1789803376.0140107,
+    "ast_hash": "32e78b94096e0c0f66e5620cc4098f02",
+    "semantic_hash": "32e78b94096e0c0f66e5620cc4098f02"
+  },
+  "erp_ai/handlers/formatters.py": {
+    "mtime": 1789117184.1495318,
+    "seen": 1789803376.0140128,
+    "ast_hash": "83e960183c65824521099e2281fef534",
+    "semantic_hash": "83e960183c65824521099e2281fef534"
+  },
+  "erp_ai/help/__init__.py": {
+    "mtime": 1789210496.9895525,
+    "seen": 1789803376.0140145,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "erp_ai/help/articles.py": {
+    "mtime": 1789625997.9468412,
+    "seen": 1789803376.014016,
+    "ast_hash": "2ccae12de74196ae5997426ef464423c",
+    "semantic_hash": "2ccae12de74196ae5997426ef464423c"
+  },
+  "erp_ai/help/seed_articles.py": {
+    "mtime": 1789211494.70735,
+    "seen": 1789803376.014018,
+    "ast_hash": "534b572fcca9ff8b4088b10e6e66c781",
+    "semantic_hash": "534b572fcca9ff8b4088b10e6e66c781"
+  },
+  "erp_ai/hooks.py": {
+    "mtime": 1789707259.5948508,
+    "seen": 1789803376.0140195,
+    "ast_hash": "50f7a90dd7d9c5a9b299323dba24668b",
+    "semantic_hash": "50f7a90dd7d9c5a9b299323dba24668b"
+  },
+  "erp_ai/idempotency.py": {
+    "mtime": 1789622930.358309,
+    "seen": 1789803376.014022,
+    "ast_hash": "7883afbff4dfae000bd72afa826d8a1b",
+    "semantic_hash": "7883afbff4dfae000bd72afa826d8a1b"
+  },
+  "erp_ai/install.py": {
+    "mtime": 1789530498.5275395,
+    "seen": 1789803376.0140238,
+    "ast_hash": "ec5ae011e7d5c962f7eb9f26a41db323",
+    "semantic_hash": "ec5ae011e7d5c962f7eb9f26a41db323"
+  },
+  "erp_ai/intents/__init__.py": {
+    "mtime": 1789117990.3382838,
+    "seen": 1789803376.0140266,
+    "ast_hash": "5fb8c5d396a68298d4a3a999d9612fd7",
+    "semantic_hash": "5fb8c5d396a68298d4a3a999d9612fd7"
+  },
+  "erp_ai/knowledge/erpnext_kb.py": {
+    "mtime": 1789128406.9603832,
+    "seen": 1789803376.014029,
+    "ast_hash": "6d29a2394963bbbfba2c1e43b65fb711",
+    "semantic_hash": "6d29a2394963bbbfba2c1e43b65fb711"
+  },
+  "erp_ai/knowledge/sources.py": {
+    "mtime": 1789183931.076465,
+    "seen": 1789803376.014032,
+    "ast_hash": "ee2452bc76d7668fe8a39fb6f8e70d77",
+    "semantic_hash": "ee2452bc76d7668fe8a39fb6f8e70d77"
+  },
+  "erp_ai/llm/__init__.py": {
+    "mtime": 1789628461.9266424,
+    "seen": 1789803376.0140345,
+    "ast_hash": "0d49b1a72a8b0b932a7a69eb479dcc6a",
+    "semantic_hash": "0d49b1a72a8b0b932a7a69eb479dcc6a"
+  },
+  "erp_ai/mcp/__init__.py": {
+    "mtime": 1789538098.2138677,
+    "seen": 1789803376.0140367,
+    "ast_hash": "1ab327a92df353441d104514e8ce0dc3",
+    "semantic_hash": "1ab327a92df353441d104514e8ce0dc3"
+  },
+  "erp_ai/mcp/server.py": {
+    "mtime": 1789629986.1491761,
+    "seen": 1789803376.0140386,
+    "ast_hash": "7976a3c61895c00d88faf37945901bf4",
+    "semantic_hash": "7976a3c61895c00d88faf37945901bf4"
+  },
+  "erp_ai/patches/__init__.py": {
+    "mtime": 1788766152.8112285,
+    "seen": 1789803376.0140562,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "erp_ai/patches/normalize_llm_provider.py": {
+    "mtime": 1789710401.949713,
+    "seen": 1789803376.0140579,
+    "ast_hash": "2f42d5c6f047677730e1b2df1c25158d",
+    "semantic_hash": "2f42d5c6f047677730e1b2df1c25158d"
+  },
+  "erp_ai/public/js/ai_settings.js": {
+    "mtime": 1789449384.5688024,
+    "seen": 1789803376.01406,
+    "ast_hash": "d34f9319632c7b590bc3aa0811060003",
+    "semantic_hash": "d34f9319632c7b590bc3aa0811060003"
+  },
+  "erp_ai/public/js/ai_widget.js": {
+    "mtime": 1789707374.544057,
+    "seen": 1789803376.014063,
+    "ast_hash": "c16a27ad3d5371364abade560a710b50",
+    "semantic_hash": "c16a27ad3d5371364abade560a710b50"
+  },
+  "erp_ai/questions/__init__.py": {
+    "mtime": 1789117112.0623255,
+    "seen": 1789803376.0140643,
+    "ast_hash": "8ae4b36e4796aef8042c0ece60ffd9ac",
+    "semantic_hash": "8ae4b36e4796aef8042c0ece60ffd9ac"
+  },
+  "erp_ai/rbac/__init__.py": {
+    "mtime": 1789631093.5162508,
+    "seen": 1789803376.0140667,
+    "ast_hash": "af837f80e004ae67b6d1167fcca1fcff",
+    "semantic_hash": "af837f80e004ae67b6d1167fcca1fcff"
+  },
+  "erp_ai/safety/__init__.py": {
+    "mtime": 1789117022.5343597,
+    "seen": 1789803376.0140681,
+    "ast_hash": "d8b61cce7b0d5fe72a221a700d7ae0f4",
+    "semantic_hash": "d8b61cce7b0d5fe72a221a700d7ae0f4"
+  },
+  "erp_ai/schema/__init__.py": {
+    "mtime": 1789624801.1582778,
+    "seen": 1789803376.014071,
+    "ast_hash": "c42c5ae448fd41def37f7d6e07bad70b",
+    "semantic_hash": "c42c5ae448fd41def37f7d6e07bad70b"
+  },
+  "erp_ai/tasks.py": {
+    "mtime": 1789709374.5541837,
+    "seen": 1789803376.0140731,
+    "ast_hash": "cd1f368d81676f2e68082874feeaf8cc",
+    "semantic_hash": "cd1f368d81676f2e68082874feeaf8cc"
+  },
+  "erp_ai/templates/__init__.py": {
+    "mtime": 1788766152.8112285,
+    "seen": 1789803376.014075,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "erp_ai/templates/pages/__init__.py": {
+    "mtime": 1788766152.8112285,
+    "seen": 1789803376.0140767,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "erp_ai/tests/__init__.py": {
+    "mtime": 1789123096.1478531,
+    "seen": 1789803376.0140793,
+    "ast_hash": "2f8e8ee42fefbed690c031d569012e89",
+    "semantic_hash": "2f8e8ee42fefbed690c031d569012e89"
+  },
+  "erp_ai/tests/ci_seed.py": {
+    "mtime": 1789798683.1970384,
+    "seen": 1789803376.0140815,
+    "ast_hash": "8912789f48c7af23fa3fd02d91d27dd7",
+    "semantic_hash": "8912789f48c7af23fa3fd02d91d27dd7"
+  },
+  "erp_ai/tests/test_ai_user_behavior.py": {
+    "mtime": 1789711037.5787086,
+    "seen": 1789803376.0140831,
+    "ast_hash": "b090703202867dfefd90c16f9bb6a665",
+    "semantic_hash": "b090703202867dfefd90c16f9bb6a665"
+  },
+  "erp_ai/tests/test_core.py": {
+    "mtime": 1789128167.5325158,
+    "seen": 1789803376.014087,
+    "ast_hash": "cdcc5acf08c3c08d64bc07f7d190c569",
+    "semantic_hash": "cdcc5acf08c3c08d64bc07f7d190c569"
+  },
+  "erp_ai/tests/test_erp_ai_security.py": {
+    "mtime": 1789797206.4712715,
+    "seen": 1789803376.014088,
+    "ast_hash": "2fe406cd48f522b6712397b26f805ac6",
+    "semantic_hash": "2fe406cd48f522b6712397b26f805ac6"
+  },
+  "erp_ai/tests/test_frappe_integration.py": {
+    "mtime": 1789537880.4450443,
+    "seen": 1789803376.0140898,
+    "ast_hash": "c1fb7372e31886735acf2457ed454ed2",
+    "semantic_hash": "c1fb7372e31886735acf2457ed454ed2"
+  },
+  "erp_ai/tests/test_infra.py": {
+    "mtime": 1789710489.066691,
+    "seen": 1789803376.0140936,
+    "ast_hash": "4c36a6506ed72949e8d08df0c0dc56e8",
+    "semantic_hash": "4c36a6506ed72949e8d08df0c0dc56e8"
+  },
+  "erp_ai/tests/test_knowledge.py": {
+    "mtime": 1789128167.536516,
+    "seen": 1789803376.014095,
+    "ast_hash": "222ad7e230e4772279d005787f346511",
+    "semantic_hash": "222ad7e230e4772279d005787f346511"
+  },
+  "erp_ai/tests/test_rbac.py": {
+    "mtime": 1789630232.2382267,
+    "seen": 1789803376.0140967,
+    "ast_hash": "f4ad365dfad65b3f322abbb0258b9605",
+    "semantic_hash": "f4ad365dfad65b3f322abbb0258b9605"
+  },
+  "erp_ai/tests/test_security.py": {
+    "mtime": 1789128167.5325158,
+    "seen": 1789803376.0140984,
+    "ast_hash": "599b13c00d45ca787c9f846d5f90ae73",
+    "semantic_hash": "599b13c00d45ca787c9f846d5f90ae73"
+  },
+  "erp_ai/validators/__init__.py": {
+    "mtime": 1789117114.114301,
+    "seen": 1789803376.0141015,
+    "ast_hash": "921cc2cbbd36e6233d0e800eb4838b6a",
+    "semantic_hash": "921cc2cbbd36e6233d0e800eb4838b6a"
+  },
+  "erp_ai/voice/__init__.py": {
+    "mtime": 1789626105.1552486,
+    "seen": 1789803376.0141034,
+    "ast_hash": "9b987f9ecf4993d79e24b7e1e9a45e5b",
+    "semantic_hash": "9b987f9ecf4993d79e24b7e1e9a45e5b"
+  },
+  "erp_ai/voice/setup_voice.sh": {
+    "mtime": 1788769523.8486915,
+    "seen": 1789803376.0141048,
+    "ast_hash": "4cf4b5c9731f85d10c023f9e3f6123b0",
+    "semantic_hash": "4cf4b5c9731f85d10c023f9e3f6123b0"
+  },
+  "erp_ai/voice/toggle.py": {
+    "mtime": 1789371012.8120747,
+    "seen": 1789803376.0141063,
+    "ast_hash": "14c52016df41209f6f6e3bdc97572a37",
+    "semantic_hash": "14c52016df41209f6f6e3bdc97572a37"
+  },
+  "erp_ai/workflows/__init__.py": {
+    "mtime": 1789117218.3651998,
+    "seen": 1789803376.014109,
+    "ast_hash": "c8a966a00446e1283ec33799a0b2ef81",
+    "semantic_hash": "c8a966a00446e1283ec33799a0b2ef81"
+  },
+  "erp_ai/workflows/shipment.py": {
+    "mtime": 1789797586.8335774,
+    "seen": 1789803376.0141115,
+    "ast_hash": "3e51d4ae543175dc1060fd1023aee55b",
+    "semantic_hash": "3e51d4ae543175dc1060fd1023aee55b"
+  },
+  "erp_ai/workflows/stock_issue.py": {
+    "mtime": 1789626322.4600742,
+    "seen": 1789803376.0141132,
+    "ast_hash": "7379daf4bbcb2026afbb25f7cbf4e5c5",
+    "semantic_hash": "7379daf4bbcb2026afbb25f7cbf4e5c5"
+  },
+  "pyproject.toml": {
+    "mtime": 1789703458.8095663,
+    "seen": 1789803376.014116,
+    "ast_hash": "8c23fc44cb6cba699c633357279ea08a",
+    "semantic_hash": "8c23fc44cb6cba699c633357279ea08a"
+  },
+  "scripts/sync_workspace.py": {
+    "mtime": 1789802798.4072978,
+    "seen": 1789803376.0141184,
+    "ast_hash": "88e7068d3b86d1dd618f3c599052d484",
+    "semantic_hash": "88e7068d3b86d1dd618f3c599052d484"
+  },
+  ".github/workflows/ci.yml": {
+    "mtime": 1789794344.569294,
+    "seen": 1789803376.01412,
+    "ast_hash": "490d8a98fa38cef81d34adb21fd4b953",
+    "semantic_hash": "490d8a98fa38cef81d34adb21fd4b953"
+  },
+  ".pre-commit-config.yaml": {
+    "mtime": 1788766152.8112285,
+    "seen": 1789803376.0141215,
+    "ast_hash": "191cb10920f2157a487c56a3453cc539",
+    "semantic_hash": "191cb10920f2157a487c56a3453cc539"
+  },
+  "CODE_OF_CONDUCT.md": {
+    "mtime": 1789703263.3084,
+    "seen": 1789803376.0141237,
+    "ast_hash": "9a8cf0cdb92cfec26991939e8d9c22d3",
+    "semantic_hash": "9a8cf0cdb92cfec26991939e8d9c22d3"
+  },
+  "CONTRIBUTING.md": {
+    "mtime": 1789703238.2481043,
+    "seen": 1789803376.0141258,
+    "ast_hash": "3fd5c99ed764880a2cda8a4ea3145f91",
+    "semantic_hash": "3fd5c99ed764880a2cda8a4ea3145f91"
+  },
+  "README.md": {
+    "mtime": 1789802604.4612458,
+    "seen": 1789803376.0141277,
+    "ast_hash": "096483d556bf3deceee3377686b1a105",
+    "semantic_hash": "096483d556bf3deceee3377686b1a105"
+  },
+  "RELEASE_NOTES.md": {
+    "mtime": 1789703440.0169404,
+    "seen": 1789803376.0141294,
+    "ast_hash": "4cb9488c25faea568dc99b9f916b46ae",
+    "semantic_hash": "4cb9488c25faea568dc99b9f916b46ae"
+  },
+  "SECURITY.md": {
+    "mtime": 1789703280.1286678,
+    "seen": 1789803376.0141325,
+    "ast_hash": "0276559f90816e4309f86a58330a017d",
+    "semantic_hash": "0276559f90816e4309f86a58330a017d"
+  },
+  "erp_ai/modules.txt": {
+    "mtime": 1788766153.679231,
+    "seen": 1789803376.0141337,
+    "ast_hash": "11d13a1fea1e21ccf2352ad94d396440",
+    "semantic_hash": "11d13a1fea1e21ccf2352ad94d396440"
+  }
+}
