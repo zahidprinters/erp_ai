@@ -1,6 +1,6 @@
 # Architecture
 
-**Last updated:** 2026-09-19
+**Last updated:** 2026-09-21
 
 This document is a plain-language map of ERP AI. It is written for humans
 and for agents that need a one-shot overview before diving into a subsystem.
@@ -20,8 +20,9 @@ The architecture is described in layers, from the outside in:
 ## Source of truth
 
 This architecture is based on a graphify audit of the repository
-(1319 nodes, 2285 edges, 90 communities). The god nodes and community
-structure below are extracted from that audit, not invented.
+(2553 nodes, 3638 edges, 290 communities; built from commit `57853d47`).
+The god nodes and community structure below are extracted from that audit,
+not invented.
 
 ---
 
@@ -47,14 +48,17 @@ codebase (the god nodes from the graphify audit):
 
 | God node | Edges | What it does |
 |---|---|---|
+| God node | Edges | What it does |
+|---|---|---|
 | `FrappeMCP` | 53 | MCP permission-checking document tool layer. |
-| `_fetch()` | 32 | Data-fetch helper used widely across data-answer paths. |
-| `confirm_draft()` | 27 | Confirms a pending AI Assistant Action; validates ownership / nonce / expiry. |
-| `create_draft()` | 26 | Persists a pending operation to the AI Assistant Action DocType. |
+| `confirm_draft()` | 35 | Confirms a pending AI Assistant Action; validates ownership / nonce / expiry. |
+| `create_draft()` | 32 | Persists a pending operation to the AI Assistant Action DocType. |
+| `_fetch()` | 32 | Data-fetch helper used widely across dataanswer paths. |
+| `TestQueryPermissionScoping` | 29 | Row-level permission scoping under ERPNext (a god node per the fresh audit). |
+| `log_error_safely()` | 27 | Error logging used broadly across the app. |
+| `ask_llm()` | 21 | Central LLM entry point; routes to Ollama / Anthropic / Google. |
 | `validate_field()` | 21 | Field-level validation for proposed edits. |
-| `ask_llm()` | 20 | Central LLM entry point; routes to Ollama / Anthropic / Google. |
-| `log_error_safely()` | 19 | Error logging used broadly across the app. |
-| `check_illegal_operation()` | 17 | Operation guard for restricted actions. |
+| `_SkipIfNoDB` | 19 | Test helper that skips DB-backed tests when there is no site (god node in the fresh audit). |
 
 The API layer is the right place to look first when something feels wrong
 with the assistant's behavior — most of the logic lives here.
@@ -215,11 +219,13 @@ See [ROADMAP.md](../ROADMAP.md) Phase 3.2 for ongoing hygiene.
 
 ### 5.3 Observability
 
-- **Logging** — `log_error_safely()` is the central error logger (19 edges).
-  Today it logs file + stripped stack. Structured fields (action_id / provider
-  / model / outcome) are planned in ROADMAP Phase 1.3.
-- **Health** — `erp_ai.api.health()` reports provider status; planned to
-  expand to full runtime health in Phase 1.1.
+- **Logging** — `log_error_safely()` is the central error logger (27 edges).
+  It logs file + stripped stack, and now supports structured fields (action_id
+  / provider / model / session / tool / user) via the `context` kwarg, plus
+  `retryable` classification (timeout/connection → retryable, else fatal).
+  See ROADMAP Phase 1.3 (done).
+- **Health** — `erp_ai.api.health()` reports configured LLM provider plus voice
+  runtime reachability; see ROADMAP Phase 1.1 (done).
 
 ---
 
@@ -227,10 +233,11 @@ See [ROADMAP.md](../ROADMAP.md) Phase 3.2 for ongoing hygiene.
 
 From the graphify audit:
 
-- **AI Action Audit** (cohesion 0.05) — weakly interconnected; a future
-  refactor candidate.
-- **Knowledge Sources** (cohesion 0.06) — weakly interconnected; freshness +
-  citation improvements come first (Phase 1.2), refactor later.
+- **AI Action Audit** (community `audit.py`, 32 nodes, cohesion 0.05) —
+  weakly interconnected; a future refactor candidate.
+- **Knowledge Sources** (community `KnowledgeSource`, 16 nodes, cohesion 0.12) —
+  fresh audit shows higher cohesion after Phase 1.2 (verifiable citations +
+  freshness). Refactor later if warranted.
 - **Inferred edges** — `FrappeMCP` has 8 inferred (model-reasoned) edges that
   need manual verification (Phase 1.3-adjacent cleanup).
 
@@ -238,11 +245,12 @@ From the graphify audit:
 
 ## 7. External references
 
-- [graphify audit output](graphify-out/GRAPH_REPORT.md) — the raw audit.
+- [graphify audit output](graphify-out/GRAPH_REPORT.md) — the raw audit (2553 nodes, 3638 edges, 290 communities; built from commit `57853d47`).
 - [skills/local-llm-runtime.md](../skills/local-llm-runtime.md) — LLM runtime skill.
 - [ROADMAP.md](../ROADMAP.md) — planned improvements.
 - [README.md](../README.md) — capabilities and usage.
 - [UPGRADE.md](../UPGRADE.md) — upgrade guide.
+- [ERP AI GitHub repository](https://github.com/zahidprinters/erp_ai) — source, issues, CI.
 
 ---
 
