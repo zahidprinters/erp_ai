@@ -414,9 +414,10 @@ def _maybe_auto_confirm(session: str, user: str, prompt: str) -> Optional[str]:
         res = confirm_draft(session=session, user=user)
     except Exception:
         return "I tried to create that but ran into an error. Can you try again?"
-    if not res or not res.get("ok"):
+    if not res or not (res.get("ok") or res.get("name")):
         # confirm_draft returns {"ok": False, "error": "..."} on known failures
-        # (wrong owner, expired, already processed, missing fields, etc.).
+        # (wrong owner, expired, already processed, missing fields, etc.),
+        # or {"success": True, "name": ..., "doctype": ...} on success.
         reason = (res or {}).get("error") or "I could not create that."
         return reason
     name = res.get("name") or res.get("docname")

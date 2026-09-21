@@ -372,7 +372,7 @@ class TestGenericDepartmentExecution(FrappeTestCase):
     def test_task_execution_via_confirm(self):
         subject = "GenTask " + frappe.generate_hash(length=6)
         res = self._confirm("Task", {"subject": subject})
-        self.assertTrue(res.get("ok"), res)
+        self.assertTrue(res.get("name"), res)
         self.assertTrue(frappe.db.exists("Task", res["name"]))
 
     def test_auto_confirm_on_yes_creates_document(self):
@@ -459,7 +459,6 @@ class TestGenericDepartmentExecution(FrappeTestCase):
         self.assertTrue(reply)
         self.assertIn("expired", reply.lower())
         self.assertFalse(frappe.db.exists("Item", {"item_name": data["item_name"]}))
-
 
     def test_task_inherits_print_url(self):
         subject = "GenTaskURL " + frappe.generate_hash(length=6)
