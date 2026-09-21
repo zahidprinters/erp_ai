@@ -1548,8 +1548,33 @@ class TestChatRouteSmoke(_SkipIfNoDB, unittest.TestCase):
             res = api_mod.ask_v2_with_voice("hello", session="smoke-voice")
         self.assertEqual(res["response"], "Voice hello")
         self.assertEqual(res["audio_url"], "/files/x.wav")
+        self.assertIsNone(res["voice_error"])
         self.assertTrue(res["session"])
         tts.assert_called_once_with("Voice hello")
+
+    def test_ask_v2_with_voice_surfaces_tts_failure_cleanly(self):
+        """Phase 2.1: a broken TTS stage must never fail the turn — the text
+        answer survives and a clean voice_error replaces the audio."""
+        # (a) TTS stage reports an error dict (e.g. its own timeout).
+        with mock.patch("erp_ai.api._data_answer", return_value={"ok": False}), \
+                mock.patch("erp_ai.api.ask_llm", return_value="Voice hello"), \
+                mock.patch("erp_ai.voice.toggle.is_voice_enabled", return_value=True), \
+                mock.patch("erp_ai.api.text_to_speech",
+                           return_value={"error": "TTS timed out after 30s"}):
+            res = api_mod.ask_v2_with_voice("hello", session="smoke-voice-err")
+        self.assertEqual(res["response"], "Voice hello")
+        self.assertIsNone(res["audio_url"])
+        self.assertIn("timed out", res["voice_error"])
+        # (b) TTS stage raises (runtime crash) — still no traceback.
+        with mock.patch("erp_ai.api._data_answer", return_value={"ok": False}), \
+                mock.patch("erp_ai.api.ask_llm", return_value="Voice hello"), \
+                mock.patch("erp_ai.voice.toggle.is_voice_enabled", return_value=True), \
+                mock.patch("erp_ai.api.text_to_speech",
+                           side_effect=RuntimeError("piper crashed")):
+            res = api_mod.ask_v2_with_voice("hello", session="smoke-voice-boom")
+        self.assertEqual(res["response"], "Voice hello")
+        self.assertIsNone(res["audio_url"])
+        self.assertIn("unavailable", res["voice_error"])
 
     def test_ask_with_doc_grounds_on_document(self):
         doc = mock.MagicMock()

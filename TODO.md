@@ -25,11 +25,11 @@ Updated: 2026-09-21 (resume)
 - [x] Phase 1.1: Ollama timeout ceiling + retry wrapper + health() reachability (commit d95b4da)
 - [x] Phase 1.1.1: CI fix — ensure erp_ai in apps.txt before bench install-app (commit b85db0b)
 
-### Phase 2 — Voice & latency robustness (not started)
-- [ ] Re-prompt on STT timeout
-- [ ] Configurable STT backend per site
-- [ ] Initial speech detection
-- [ ] Voice runtime resilience improvements
+### Phase 2 — Voice & latency robustness — in progress
+
+- [x] 2.1 Voice timeout budget across STT → LLM → TTS + clean voice-unavailable surfacing — done
+- [ ] 2.2 Pre-commit + formatting consistency (config exists; wire pre-push enforcement)
+- [x] Fixed `ask_v2` audio path (base64 was never decoded before transcription)
 
 ### Phase 3 — Flow-level e2e tests in CI (not started)
 - [ ] End-to-end flow tests for the guided draft→confirm→submit cycle

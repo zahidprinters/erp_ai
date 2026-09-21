@@ -350,10 +350,22 @@ def ask_v2(prompt, session=None, model=None, audio_base64=None):
         frappe.throw("prompt or audio_base64 is required")
 
     if audio_base64:
-        transcribed = _transcribe_audio(audio_base64)
-        if not transcribed:
-            frappe.throw("Failed to transcribe audio")
-        prompt = (prompt + " " if prompt else "") + transcribed
+        # The widget posts base64; the Whisper helper takes raw bytes (and
+        # enforces format/size limits itself). The payload used to be passed
+        # through undecoded, so the audio path could never transcribe.
+        import base64 as _b64
+
+        try:
+            audio_bytes = _b64.b64decode(audio_base64, validate=True)
+        except Exception:
+            frappe.throw("Invalid audio payload (expected base64)")
+        result = _transcribe_audio(audio_bytes)
+        if result.get("error"):
+            frappe.throw("Voice transcription unavailable: %s" % result["error"])
+        text = (result.get("text") or "").strip()
+        if not text or text == "(no speech detected)":
+            frappe.throw("No speech detected in the audio")
+        prompt = (prompt + " " if prompt else "") + text
 
     reply, session = _assistant_reply(prompt, session, model)
     return {"response": reply, "session": session}
@@ -649,18 +661,39 @@ def _fallback_to_llm(prompt, session, user, model):
 # ---------------------------------------------------------------------------
 @frappe.whitelist()
 def ask_v2_with_voice(prompt, session=None, model=None, voice=True):
-    """Enhanced AI assistant with optional voice output."""
+    """Enhanced AI assistant with optional voice output.
+
+    The text answer is the primary product; voice is best-effort. A missing or
+    broken TTS runtime must never fail the turn — the response carries the
+    text answer plus a clean ``voice_error`` the widget can surface ("voice
+    unavailable: …"), never a traceback.
+    """
     if not prompt:
         frappe.throw("prompt is required")
     result = ask_v2(prompt, session, model)
     response_text = result.get("response", "")
     audio_url = None
+    voice_error = None
     if voice and response_text:
         from erp_ai.voice.toggle import is_voice_enabled
         if is_voice_enabled():
-            tts_result = text_to_speech(response_text)
-            audio_url = tts_result.get("url")
-    return {"response": response_text, "session": result.get("session"), "audio_url": audio_url}
+            try:
+                tts_result = text_to_speech(response_text)
+                audio_url = tts_result.get("url")
+                if not audio_url:
+                    # TTS stage bounded by its own timeout; report why it is
+                    # silent instead of returning a bare None.
+                    voice_error = tts_result.get("error") or "TTS produced no audio"
+            except Exception as e:
+                from erp_ai.audit import log_error_safely
+                log_error_safely(
+                    "erp_ai: text_to_speech failed", str(e),
+                    context={"session": result.get("session"),
+                             "user": getattr(frappe.session, "user", None)},
+                    retryable=e)
+                voice_error = "Voice output is temporarily unavailable."
+    return {"response": response_text, "session": result.get("session"),
+            "audio_url": audio_url, "voice_error": voice_error}
 
 
 @frappe.whitelist()

@@ -84,6 +84,13 @@ Runtime files expected by `erp_ai.voice._ai_home()`:
   `ur_PK-fasih-medium.onnx`
 - `ffmpeg` on `PATH`
 
+**Voice timeout budget (Phase 2.1):** every stage of the round trip is bounded —
+ffmpeg conversion 30 s, Whisper STT 120 s, Piper TTS 30 s (`erp_ai.voice.STAGE_BUDGET`),
+and the LLM stage shares the Phase 1.1 discipline (settings timeout clamped to
+`OLLAMA_TIMEOUT_CEILING`). A voice call always completes or fails within a bounded
+time. `erp_ai.api.voice_runtime_available()` reports a clean, actionable missing-
+components list instead of a mid-call decoder error.
+
 See [Voice input (mic) not working](#voice-input-mic-not-working) for verification.
 
 ### 4. Add LLM models in Ollama
@@ -158,6 +165,9 @@ data (supplier, item, customer) is never created without that explicit step.
 - Click 🎤 in chat → allow mic → speak → stop → words appear in the input.
 - Answers auto-play with 🔊 (toggle 🔇 to disable). English by default; Urdu via
   `lang=ur` in the model param.
+- Voice is best-effort: if TTS is unavailable or times out, the text answer is
+  still returned with a `voice_error` message ("voice unavailable: …") — never a
+  traceback or a silently missing audio URL.
 
 ---
 

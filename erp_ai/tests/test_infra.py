@@ -262,6 +262,56 @@ def test_voice_rejects_oversized_tts(monkeypatch, tmp_path):
     assert "too long" in res["error"]
 
 
+# --- Phase 2.1: voice timeout budget + runtime availability ---
+def test_voice_stage_budget_covers_every_subprocess_stage():
+    """Each bounded voice stage has an entry in the budget, all positive, and
+    the round trip is bounded (no stage may be unbounded)."""
+    from erp_ai.voice import FFMPEG_TIMEOUT, STAGE_BUDGET, TTS_TIMEOUT, WHISPER_TIMEOUT, voice_stage_budget
+
+    assert voice_stage_budget() == {
+        "convert": FFMPEG_TIMEOUT, "stt": WHISPER_TIMEOUT, "tts": TTS_TIMEOUT,
+    }
+    assert all(v > 0 for v in STAGE_BUDGET.values())
+    # Total budget is the sum of stages: a call must terminate.
+    assert sum(STAGE_BUDGET.values()) < 600
+
+
+def test_voice_runtime_available_reports_missing_components(monkeypatch, tmp_path):
+    """An unprovisioned runtime is reported as a clean, actionable list."""
+    import shutil
+
+    # Pin the runtime root: _ai_home() would otherwise find the real
+    # provisioned ~/ai on this machine and report nothing missing.
+    monkeypatch.setattr("erp_ai.voice._ai_home", lambda: str(tmp_path))
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+
+    from erp_ai.voice import voice_runtime_available
+    res = voice_runtime_available()
+    assert res["ok"] is False
+    joined = " ".join(res["missing"])
+    assert "whisper" in joined and "piper" in joined and "ffmpeg" in joined
+
+
+def test_voice_runtime_available_ok_when_provisioned(monkeypatch, tmp_path):
+    """With the runtime present and ffmpeg on PATH, availability is ok=True."""
+    import shutil
+
+    monkeypatch.setattr("erp_ai.voice._ai_home", lambda: str(tmp_path))
+    (tmp_path / "whisper.cpp/build/bin").mkdir(parents=True)
+    (tmp_path / "whisper.cpp/build/bin/whisper-cli").write_bytes(b"")
+    (tmp_path / "models").mkdir()
+    (tmp_path / "models/ggml-tiny.bin").write_bytes(b"")
+    (tmp_path / "models/en_US-lessac-medium.onnx").write_bytes(b"")
+    (tmp_path / "piper").mkdir()
+    (tmp_path / "piper/piper").write_bytes(b"")
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/ffmpeg")
+
+    from erp_ai.voice import voice_runtime_available
+    res = voice_runtime_available()
+    assert res["ok"] is True, res
+    assert res["missing"] == []
+
+
 # --- Idempotency key generation ---
 def test_idempotency_key_deterministic():
     a = generate_idempotency_key("sess-1", "create", "Sales Invoice",

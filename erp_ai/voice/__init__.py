@@ -37,6 +37,50 @@ FFMPEG_TIMEOUT = 30
 WHISPER_TIMEOUT = 120
 TTS_TIMEOUT = 30
 
+# Phase 2.1 — per-stage timeout budget for the voice round trip.
+# A voice call completes or fails within a bounded time: every subprocess
+# stage has its own ceiling (above), the pre/post-conversion stages are
+# trivial, and the LLM stage in the combined path shares the Phase 1.1
+# discipline (settings timeout clamped to OLLAMA_TIMEOUT_CEILING).
+STAGE_BUDGET = {
+    "convert": FFMPEG_TIMEOUT,
+    "stt": WHISPER_TIMEOUT,
+    "tts": TTS_TIMEOUT,
+}
+
+
+def voice_stage_budget() -> Dict[str, int]:
+    """Return the per-stage timeout budget (seconds) for the voice path."""
+    return dict(STAGE_BUDGET)
+
+
+def voice_runtime_available() -> Dict[str, Any]:
+    """Report whether the local voice runtime (STT + TTS) is provisioned.
+
+    Lets endpoints say "voice is unavailable: <what's missing>" instead of
+    failing mid-subprocess with a decoder error. Never raises, never runs a
+    subprocess — pure filesystem checks.
+    """
+    home = _ai_home()
+    whisper_bin = os.path.join(home, "whisper.cpp/build/bin/whisper-cli")
+    whisper_model = os.path.join(home, "models/ggml-tiny.bin")
+    piper_bin = os.path.join(home, "piper/piper")
+    tts_model_en = os.path.join(home, "models/en_US-lessac-medium.onnx")
+
+    missing = []
+    if not os.path.exists(whisper_bin):
+        missing.append("whisper.cpp runtime (whisper-cli)")
+    if not os.path.exists(whisper_model):
+        missing.append("whisper model (ggml-tiny.bin)")
+    if not os.path.exists(piper_bin):
+        missing.append("piper runtime")
+    if not os.path.exists(tts_model_en):
+        missing.append("piper voice model (en_US-lessac-medium.onnx)")
+    import shutil as _shutil
+    if not _shutil.which("ffmpeg"):
+        missing.append("ffmpeg on PATH")
+    return {"ok": not missing, "missing": missing, "home": home}
+
 
 def _private_tmp_dir(home):
     """Create and lock down the voice working directory.

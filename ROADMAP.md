@@ -133,7 +133,7 @@ Top-level tiers (from the development-audit roadmap):
 | **Acceptance criteria** | - A voice round-trip completes or fails within a bounded time with a clear message. <br>- The README voice section reflects the actual stack and any quant/speedup notes. |
 | **Effort** | Medium |
 | **Risk** | Medium — keep it in `erp_ai.api` and test on both CPU and where a GPU is available. |
-| **Status** | 🔲 **Not started** |
+| **Status** | ✅ **Done** — `STAGE_BUDGET` (ffmpeg 30s / STT 120s / TTS 30s), `voice_runtime_available()` clean missing-components report, TTS failure surfaced as `voice_error` without failing the turn, `ask_v2` base64-decode bug fixed |
 
 ### 2.2 Pre-commit + formatting consistency
 
