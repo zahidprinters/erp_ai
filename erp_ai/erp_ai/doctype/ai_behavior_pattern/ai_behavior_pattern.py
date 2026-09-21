@@ -14,4 +14,4 @@ from frappe.model.document import Document
 
 
 class AIBehaviorPattern(Document):
-    """Controller: rows are owned by the nightly task, not by users."""
+	"""Controller: rows are owned by the nightly task, not by users."""

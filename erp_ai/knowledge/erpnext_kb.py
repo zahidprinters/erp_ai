@@ -200,12 +200,12 @@ RULES FOR THE AI ASSISTANT:
 
 
 def get_knowledge_base():
-    return KB
+	return KB
 
 
 def get_knowledge_excerpt(max_chars=12000):
-    """Return knowledge base (optionally trimmed) for prompt injection."""
-    return KB[:max_chars]
+	"""Return knowledge base (optionally trimmed) for prompt injection."""
+	return KB[:max_chars]
 
 
 # Compact quick-reference (~1.5k chars) for FAST responses.
@@ -214,4 +214,4 @@ ERPNext v15 (SPI ERP) facts: Sales: Lead>Quote>Sales Order>Delivery Note>Sales I
 
 
 def get_kb_summary():
-    return KB_SUMMARY
+	return KB_SUMMARY

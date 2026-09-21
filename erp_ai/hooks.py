@@ -155,13 +155,11 @@ after_migrate = "erp_ai.install.after_migrate"
 #   - cleanup_expired_actions trims already-audited terminal rows.
 
 scheduler_events = {
-	"hourly": [
-		"erp_ai.tasks.expire_stale_actions"
-	],
+	"hourly": ["erp_ai.tasks.expire_stale_actions"],
 	"daily": [
 		"erp_ai.tasks.cleanup_expired_actions",
 		"erp_ai.tasks.refresh_behavior_patterns",
-		"erp_ai.tasks.draft_help_for_repeated_failures"
+		"erp_ai.tasks.draft_help_for_repeated_failures",
 	],
 }
 
