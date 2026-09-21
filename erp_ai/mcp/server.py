@@ -210,7 +210,16 @@ class FrappeMCP:
                 return {"error": f"Unknown tool: {name}"}
             return method(**args)
         except Exception as e:
-            frappe.log_error("erp_ai.mcp.call_tool", str(e))
+            from erp_ai.audit import log_error_safely
+            args = args if isinstance(args, dict) else {}
+            log_error_safely(
+                "erp_ai.mcp.call_tool: %s" % name, str(e),
+                context={
+                    "tool": name,
+                    "doctype": args.get("doctype"),
+                    "user": getattr(frappe.session, "user", None),
+                },
+                retryable=e)
             return {"error": str(e)}
 
     def tool_query_doctype(self, doctype, filters=None, fields=None, limit=20, order_by=None):
@@ -297,7 +306,11 @@ class FrappeMCP:
                     record_failure(claim.get("action_id"), str(e))
                 except Exception:
                     pass
-            frappe.log_error("erp_ai.mcp.create_document", str(e))
+            from erp_ai.audit import log_error_safely
+            log_error_safely(
+                "erp_ai.mcp.create_document failed", str(e),
+                context={"doctype": doctype, "user": getattr(frappe.session, "user", None)},
+                retryable=e)
             return {"error": f"Failed to create {doctype}: {str(e)}"}
 
     def tool_update_document(self, doctype, name, data):

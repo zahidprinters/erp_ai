@@ -452,7 +452,14 @@ def confirm_draft(session, user=None, expected_nonce=None, action_id=None):
             result_payload={"error": str(exc)},
         )
         log_error_safely(
-            "erp_ai: confirm_draft failed for %s" % action_id, str(exc))
+            "erp_ai: confirm_draft failed for %s" % action_id, str(exc),
+            context={
+                "action_id": action_id,
+                "doctype": target_doctype,
+                "session": action.session_id,
+                "user": user,
+            },
+            retryable=exc)
         return {"error": "Confirmation failed. Please try again."}
 
 

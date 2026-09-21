@@ -183,7 +183,22 @@ def get_audit_trail(session: str, user: str) -> list:
     return records
 
 
-def log_error_safely(title: str, message=None) -> None:
+def _classify_retryable(exc) -> bool:
+    """Heuristic retryable-vs-fatal classification for AI action failures.
+
+    Transient network conditions (timeouts, connection resets) are retryable;
+    everything else (validation, permissions, data errors) is fatal — a retry
+    would repeat the same failure.
+    """
+    import requests
+
+    if isinstance(exc, (requests.Timeout, requests.ConnectionError)):
+        return True
+    name = type(exc).__name__.lower()
+    return "timeout" in name or "connection" in name
+
+
+def log_error_safely(title: str, message=None, context=None, retryable=None) -> None:
     """Log an error without letting the logging call mask the original failure.
 
     ``frappe.log_error(title=None, message=None)`` takes the TITLE first (it only
@@ -193,20 +208,45 @@ def log_error_safely(title: str, message=None) -> None:
     caller's ``except`` block, so the real tool/workflow error was replaced by a
     logging error and the failure reason never reached the log.
 
+    Structured context (Phase 1.3): pass ``context`` to record which action /
+    provider / model / session failed, and ``retryable`` (or an exception, see
+    below) to distinguish transient from fatal — machine-readable so an
+    operator or script can triage without decoding prose.
+
+    If ``retryable`` is omitted but ``context`` was extracted from a live
+    exception, pass the exception as ``retryable=exc`` — the classifier decides.
+
     Truncates the title and falls back to the file logger if Frappe logging
     itself is unavailable, so this helper can never raise.
     """
+    import json as _json
+
     import frappe
+
     title = (str(title) or "erp_ai error")[:140]
+    structured = ""
+    if context:
+        try:
+            structured += "\ncontext: %s" % _json.dumps(
+                {str(k): str(v) for k, v in context.items() if v is not None},
+                sort_keys=True,
+            )
+        except Exception:
+            pass
+    if retryable is not None:
+        flag = _classify_retryable(retryable) if isinstance(retryable, Exception) else bool(retryable)
+        structured += "\nclass: %s" % ("retryable" if flag else "fatal")
+    body = message if message is not None else frappe.get_traceback(with_context=True)
+    if structured:
+        body = "%s%s" % (body, structured) if body else structured.lstrip("\n")
     try:
         frappe.log_error(
             title=title,
-            message=message if message is not None
-            else frappe.get_traceback(with_context=True),
+            message=body,
         )
     except Exception:
         # Never let observability break the code path that is already failing.
         try:
-            frappe.logger("erp_ai").error("%s :: %s", title, message)
+            frappe.logger("erp_ai").error("%s :: %s", title, body)
         except Exception:
             pass

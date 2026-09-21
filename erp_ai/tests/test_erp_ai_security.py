@@ -1933,6 +1933,54 @@ class TestErrorLoggingNeverMasksFailures(_SkipIfNoDB, unittest.TestCase):
         log_error_safely(ValueError("boom" * 200))
         frappe.db.commit()
 
+    def test_safe_logger_records_structured_context(self):
+        """Phase 1.3: context + retryable flag land in the log entry as
+        machine-readable lines."""
+        from erp_ai.audit import log_error_safely
+
+        log_error_safely(
+            "erp_ai.test.structured", "simulated failure",
+            context={"action_id": "ACT-TEST-1", "provider": "Ollama (Local)",
+                     "model": "llama3", "session": "sess-1", "user": "u1"},
+            retryable=True)
+        frappe.db.commit()
+        entry = frappe.get_all("Error Log", filters={"method": "erp_ai.test.structured"},
+                               fields=["error"], order_by="creation desc",
+                               limit_page_length=1)
+        self.assertTrue(entry, "structured log entry not written")
+        msg = entry[0]["error"] or ""
+        self.assertIn('"action_id": "ACT-TEST-1"', msg)
+        self.assertIn('"provider": "Ollama (Local)"', msg)
+        self.assertIn("class: retryable", msg)
+
+    def test_safe_logger_fatal_classification(self):
+        from erp_ai.audit import log_error_safely
+
+        log_error_safely("erp_ai.test.fatal", "bad data", context={"k": "v"},
+                         retryable=False)
+        frappe.db.commit()
+        entry = frappe.get_all("Error Log", filters={"method": "erp_ai.test.fatal"},
+                               fields=["error"], order_by="creation desc",
+                               limit_page_length=1)
+        self.assertTrue(entry)
+        self.assertIn("class: fatal", entry[0]["error"])
+
+    def test_safe_logger_classifies_exception_type(self):
+        """Passing the exception as ``retryable`` classifies by type:
+        timeout/connection errors are retryable, others fatal."""
+        import requests
+
+        from erp_ai.audit import _classify_retryable
+
+        class MyCustomTimeout(TimeoutError):
+            pass
+
+        self.assertTrue(_classify_retryable(requests.Timeout("t")))
+        self.assertTrue(_classify_retryable(requests.ConnectionError("c")))
+        self.assertFalse(_classify_retryable(ValueError("nope")))
+        self.assertTrue(_classify_retryable(MyCustomTimeout("custom")))
+        frappe.db.commit()
+
     def test_tool_error_logging_never_raises(self):
         from erp_ai.erp_tools import _log_tool_error
 

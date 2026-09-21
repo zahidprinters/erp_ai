@@ -304,6 +304,23 @@ def _assistant_reply(prompt, session=None, model=None):
     except Exception as e:
         _record_behavior(prompt=prompt, session_id=session, intent="llm_chat",
                          outcome="failed", failure_reason=str(e))
+        # Structured failure record (Phase 1.3): which provider/model/session
+        # failed, and whether a retry could plausibly succeed.
+        try:
+            from erp_ai.audit import log_error_safely
+            from erp_ai.llm import clean_provider_name, configured_model, get_llm_settings
+            settings = get_llm_settings()
+            log_error_safely(
+                "erp_ai: ask_llm failed", str(e),
+                context={
+                    "provider": clean_provider_name(settings.llm_provider or ""),
+                    "model": model or configured_model(settings),
+                    "session": session,
+                    "user": user,
+                },
+                retryable=e)
+        except Exception:
+            pass
         raise
     _record_behavior(prompt=prompt, session_id=session, intent="llm_chat",
                      outcome="success" if reply else "failed")

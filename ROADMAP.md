@@ -101,7 +101,7 @@ Top-level tiers (from the development-audit roadmap):
 | **Acceptance criteria** | - A stale source is flagged and re-indexable. <br>- A citation is verifiable from the returned metadata. <br>- The test passes locally and in CI. |
 | **Effort** | Small–Medium |
 | **Risk** | Low |
-| **Status** | 🔲 **Not started** |
+| **Status** | ✅ **Done** — `citation_dict()` verifiable metadata, `check_freshness()` TTL + `reindex_required` trigger, stale flag in citations, 7 new tests |
 
 ### 1.3 Error observability — structured logging for AI actions
 
@@ -114,7 +114,7 @@ Top-level tiers (from the development-audit roadmap):
 | **Acceptance criteria** | - A failure in chat/voice/MCP logs an entry with provider + model + action context when available. <br>- No regression in existing callers (God-node, widely used — test carefully). |
 | **Effort** | Medium |
 | **Risk** | Medium — widely used function; coordinate with 1.1. |
-| **Status** | 🔲 **Not started** |
+| **Status** | ✅ **Done** — `context` + `retryable` kwargs (exception auto-classified via `_classify_retryable`), wired into `confirm_draft`, MCP `call_tool`/`create_document`, and `ask_llm` failure paths; 4 new tests |
 
 ---
 
@@ -273,7 +273,7 @@ Top-level tiers (from the development-audit roadmap):
 ## Current status (as of this writing)
 
 - **Phase 0** — Done. This file + CHANGELOG.md + UPGRADE.md + ARCHITECTURE.md + SKILLS.md + doc cleanup landed together.
-- **Phase 1** — In progress. 1.1 (Ollama timeout/retry/health) done; auto-confirm-on-affirmative + `ask`/`ask_v2` whitelist landed; 1.2 (knowledge freshness) and 1.3 (structured logging) still to do.
+- **Phase 1** — Done. 1.1 (Ollama timeout/retry/health) done; auto-confirm-on-affirmative + `ask`/`ask_v2` whitelist landed; 1.2 (verifiable citations + real freshness with reindex trigger) done; 1.3 (structured error logging with retryable/fatal classification) done.
 - **Phase 2** — Not started.
 - **Phase 3** — Not started.
 - **Phase 4** — Deferred.

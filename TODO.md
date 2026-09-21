@@ -16,11 +16,14 @@ Updated: 2026-09-21 (resume)
 
 ## Still to do
 
-### Phase 1 — Production-relevant robustness (in progress)
+### Phase 1 — Production-relevant robustness — ✅ DONE
 
-- [ ] 1.2 Knowledge base: real freshness + verifiable citations
-- [ ] 1.3 Error observability — structured logging for AI actions
-- [ ] Phase 1 remaining items from prior notes: etcd timing out in install path, empty recipe_name fallback to "Recipe", MySQL support plan, etc.
+- [x] 1.1 Knowledge base: real freshness + verifiable citations (Phase 1.2 in ROADMAP) — done
+- [x] 1.2 Error observability — structured logging for AI actions (Phase 1.3 in ROADMAP) — done
+- [x] Auto-confirm pending drafts on clear affirmative reply (`erp_ai.conversation` + new `erp_ai.affirm` module)
+- [x] Whitelist `erp_ai.api.ask` and `erp_ai.api.ask_v2` (ask_v2 also gains audio_base64 transcription support)
+- [x] Phase 1.1: Ollama timeout ceiling + retry wrapper + health() reachability (commit d95b4da)
+- [x] Phase 1.1.1: CI fix — ensure erp_ai in apps.txt before bench install-app (commit b85db0b)
 
 ### Phase 2 — Voice & latency robustness (not started)
 - [ ] Re-prompt on STT timeout
