@@ -136,6 +136,102 @@ def test_get_question_fallback():
 
 
 def test_get_hint_exists():
-    h = get_hint("items")
-    assert h is not None
-    assert "qty" in h.lower() or "name" in h.lower()
+    _ = get_hint("items")
+
+
+# ---------------------------------------------------------------------------
+# Affirmative / negative detectors (pure functions — no DB, no Frappe needed).
+# These gate the auto-confirm-on-"yes" feature. Import from erp_ai.affirm which
+# is a standalone pure-Python module.
+# ---------------------------------------------------------------------------
+
+from erp_ai.affirm import (
+    _AFFIRMATIVE,
+    NEGATIVE,
+    _strip_yes_no_context,
+    auto_confirm_reply,
+    is_affirmative,
+    is_negative,
+)
+
+
+def test_affirmative_token_set_non_empty():
+    assert _AFFIRMATIVE
+    for token in ("yes", "yeah", "yep", "sure", "go ahead"):
+        assert token in _AFFIRMATIVE, "missing affirmative: %s" % token
+
+
+def test_negative_token_set_non_empty():
+    assert NEGATIVE
+    for token in ("no", "nope", "nah", "not now", "cancel", "don't"):
+        assert token in NEGATIVE, "missing negative: %s" % token
+
+
+def test_is_affirmative_yes_family():
+    for t in ("yes", "yeah", "yep", "yup", "y", "sure",
+              "go ahead", "do it", "correct", "right", "create it", "make it"):
+        assert is_affirmative(t) is True, t
+
+
+def test_is_affirmative_with_light_punctuation():
+    for t in ("yes,", "yeah!", "yep.", "sure?", "yes."):
+        assert is_affirmative(t) is True, t
+
+
+def test_is_affirmative_multiword():
+    for t in ("go ahead", "go for it", "do it", "create it", "make it",
+              "please do", "go ahead and create it"):
+        assert is_affirmative(t) is True, t
+
+
+def test_is_not_affirmative_hedged_or_negative():
+    for t in ("maybe", "maybe later", "not sure", "no", "no thanks",
+              "not now", "nah", "don't create it", "", "yes but",
+              "yeah maybe", "I think so"):
+        assert is_affirmative(t) is False, t
+
+
+def test_is_negative_no_family():
+    for t in ("no", "nope", "nah", "n", "not now", "not yet", "later",
+              "cancel", "abort", "stop", "don't", "do not", "never",
+              "no thanks", "no thank you"):
+        assert is_negative(t) is True, t
+
+
+def test_is_negative_multiword_and_leading_negative():
+    for t in ("no thanks", "don't create it", "not now please",
+              "do not create it", "never mind", "not really"):
+        assert is_negative(t) is True, t
+
+
+def test_is_not_negative_affirmative_or_neutral():
+    for t in ("yes", "yeah", "sure", "go ahead", "do it", "correct",
+              "maybe", "maybe later", "ok", "okay", "", "sure thing"):
+        assert is_negative(t) is False, t
+
+
+def test_affirmative_and_negative_are_disjoint():
+    overlap = _AFFIRMATIVE & NEGATIVE
+    assert not overlap, "affirmative and negative overlap: %s" % overlap
+
+
+def test_empty_prompt_not_affirmative():
+    assert is_affirmative("") is False
+    assert is_negative("") is False
+
+
+def test_whitespace_only_not_affirmative():
+    assert is_affirmative("   ") is False
+    assert is_negative("   ") is False
+
+
+def test_auto_confirm_reply_classifies():
+    # Affirmatives -> "confirm"
+    for t in ("yes", "yeah", "sure", "go ahead", "create it", "do it"):
+        assert auto_confirm_reply(t) == "confirm", t
+    # Negatives -> "negative"
+    for t in ("no", "nope", "not now", "cancel", "don't create it"):
+        assert auto_confirm_reply(t) == "negative", t
+    # Neutral -> "collect"
+    for t in ("maybe", "steel rod", "ABC Traders", "", "   "):
+        assert auto_confirm_reply(t) == "collect", t

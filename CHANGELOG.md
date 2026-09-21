@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `UPGRADE.md` for site administrators covering upgrade migrations, seeding, and settings.
 - `ROADMAP.md` — phase-based improvement roadmap.
 
+- `erp_ai.conversation` now auto-confirms a pending guided draft when the user replies with a clear affirmative (e.g. "yes", "sure", "go ahead", "create it"). The gate is intentionally strict: hedged/qualified yeses ("yes but", "yeah maybe") and prompt-injection attempts are NOT treated as affirmative. Clear negatives ("no", "not now", "cancel") stop the guided flow without creating anything. Only confirms, never auto-submits.
+- `erp_ai.api.ask_v2` is now `@frappe.whitelisted` and accepts an optional `audio_base64` parameter that is transcribed via the local Whisper path before processing. The old non-whitelisted `ask_v2` duplicate is removed.
+- `erp_ai.api.ask` is now `@frappe.whitelisted` (it already called `_assistant_reply` under the hood; the decorator was missing).
+- New standalone pure-Python module `erp_ai.affirm` with the affirmative/negative detector functions (`is_affirmative`, `is_negative`, `auto_confirm_reply`) so the DB-free test suite can cover them without a Frappe context.
 ### Fixed
 
 - `erp_ai.api.voice_to_text` is now `@frappe.whitelisted` — the widget mic→Whisper STT path now works over HTTP (was previously Not permitted).

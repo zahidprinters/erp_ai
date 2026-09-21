@@ -14,6 +14,12 @@ from frappe.tests.utils import FrappeTestCase
 
 from erp_ai import api as api_mod
 from erp_ai import draft_workflow as draft_workflow_mod
+from erp_ai.conversation import (
+    get_draft,
+    guided_answer,
+    guided_start,
+    load_guided,
+)
 from erp_ai.draft_workflow import confirm_draft, create_draft
 from erp_ai.idempotency import check_idempotency, claim_idempotency
 from erp_ai.schema import DOCTYPE_SCHEMAS
@@ -367,8 +373,89 @@ class TestGenericDepartmentExecution(FrappeTestCase):
     def test_task_execution_via_confirm(self):
         subject = "GenTask " + frappe.generate_hash(length=6)
         res = self._confirm("Task", {"subject": subject})
-        self.assertTrue(res.get("name"), res)
+        self.assertTrue(res.get("ok"), res)
         self.assertTrue(frappe.db.exists("Task", res["name"]))
+
+    def test_auto_confirm_on_yes_creates_document(self):
+        """A reply of "yes" while a guided action is in the ready state
+        auto-confirms the draft and creates the document."""
+        session = _uniq("auto_yes")
+        data = {"item_name": "AutoYes-" + session, "item_group": "Products", "stock_uom": "Nos"}
+        reply = guided_start(session=session, user="Administrator", doctype="Item", data=data)
+        self.assertIn("Reply yes", reply)
+        # The guided flow should now be in ready state.
+        state = load_guided(session=session, user="Administrator")
+        self.assertIsNotNone(state)
+        self.assertEqual(state.get("status"), "ready")
+        # A bare "yes" auto-confirms.
+        yes_reply = guided_answer(session=session, user="Administrator", prompt="yes")
+        self.assertTrue(yes_reply)
+        self.assertIn("Created", yes_reply)
+        self.assertTrue(frappe.db.exists("Item", {"item_name": data["item_name"]}))
+        # The guided session should now be cleared.
+        self.assertIsNone(load_guided(session=session, user="Administrator"))
+
+    def test_affirmative_variants_auto_confirm(self):
+        """Common affirmative phrasings all auto-confirm the ready draft."""
+        for prompt in ("yeah", "yep", "yup", "y", "sure", "go ahead",
+                        "do it", "correct", "right", "create it", "make it"):
+            with self.subTest(prompt=prompt):
+                session = _uniq("auto_var")
+                data = {"item_name": "AutoVar-" + session, "item_group": "Products",
+                        "stock_uom": "Nos"}
+                guided_start(session=session, user="Administrator", doctype="Item", data=data)
+                reply = guided_answer(session=session, user="Administrator", prompt=prompt)
+                self.assertTrue(reply and "Created" in reply, prompt)
+                self.assertTrue(frappe.db.exists("Item", {"item_name": data["item_name"]}))
+                frappe.db.delete("Item", {"item_name": data["item_name"]})
+                frappe.db.commit()
+
+    def test_negative_reply_keeps_draft_pending(self):
+        """A clear negative while in ready state does NOT confirm; the flow
+        is stopped and the draft stays pending."""
+        session = _uniq("auto_no")
+        data = {"item_name": "AutoNo-" + session, "item_group": "Products", "stock_uom": "Nos"}
+        guided_start(session=session, user="Administrator", doctype="Item", data=data)
+        no_reply = guided_answer(session=session, user="Administrator", prompt="no")
+        self.assertIn("leave it", no_reply.lower())
+        self.assertFalse(frappe.db.exists("Item", {"item_name": data["item_name"]}))
+        # The action stays pending (not confirmed, not cancelled by the guided path).
+        draft = get_draft(session=session, user="Administrator")
+        self.assertIsNotNone(draft)
+        self.assertEqual(draft.get("status"), "pending")
+
+    def test_non_affirmative_does_not_auto_confirm(self):
+        """Ambiguous / non-affirmative replies do not auto-confirm."""
+        session = _uniq("auto_neut")
+        data = {"item_name": "AutoNeut-" + session, "item_group": "Products", "stock_uom": "Nos"}
+        guided_start(session=session, user="Administrator", doctype="Item", data=data)
+        reply = guided_answer(session=session, user="Administrator", prompt="maybe later")
+        # Should not have created the document and should keep the ready state.
+        self.assertFalse("Created" in reply, reply)
+        self.assertFalse(frappe.db.exists("Item", {"item_name": data["item_name"]}))
+        # Should still be in ready state (the reply was not negative enough to clear).
+        state = load_guided(session=session, user="Administrator")
+        self.assertIsNotNone(state)
+        self.assertEqual(state.get("status"), "ready")
+
+    def test_auto_confirm_rejects_expired_action(self):
+        """An expired ready action must not be auto-confirmed; the user gets a
+        clear refusal and the guided session is cleared."""
+        session = _uniq("auto_exp")
+        data = {"item_name": "AutoExp-" + session, "item_group": "Products", "stock_uom": "Nos"}
+        guided_start(session=session, user="Administrator", doctype="Item", data=data)
+        # Manually expire the underlying action so confirm_draft rejects it.
+        draft = get_draft(session=session, user="Administrator")
+        self.assertIsNotNone(draft)
+        action = frappe.get_doc("AI Assistant Action", draft["name"])
+        action.status = "pending"
+        action.expires_on = frappe.utils.add_to_date(frappe.utils.now_datetime(), minutes=-5)
+        action.save()
+        frappe.db.commit()
+        reply = guided_answer(session=session, user="Administrator", prompt="yes")
+        self.assertTrue(reply)
+        self.assertIn("expired", reply.lower())
+        self.assertFalse(frappe.db.exists("Item", {"item_name": data["item_name"]}))
 
     def test_task_inherits_print_url(self):
         subject = "GenTaskURL " + frappe.generate_hash(length=6)

@@ -88,7 +88,7 @@ Top-level tiers (from the development-audit roadmap):
 | **Acceptance criteria** | - A call to an unreachable Ollama endpoint returns a clear, user-facing degradation message, not a traceback. <br>- `health()` returns a structured summary that an admin can read. <br>- Retry is read-only only and is documented in README / UPGRADE. |
 | **Effort** | Medium |
 | **Risk** | Medium — touches the LLM spine; test well. |
-| **Status** | 🔲 **Not started** |
+| **Status** | ✅ **Done** — timeout ceiling (`OLLAMA_TIMEOUT_CEILING = 30s`), retry wrapper (`_ask_ollama_with_retry` on ConnectionError/HTTPError, max 2 retries), and `health()` reachability (delegates to `_llm_runtime_available`) all landed; documented in `skills/local-llm-runtime.md`. |
 
 ### 1.2 Knowledge base: real freshness + verifiable citations
 
@@ -273,7 +273,7 @@ Top-level tiers (from the development-audit roadmap):
 ## Current status (as of this writing)
 
 - **Phase 0** — Done. This file + CHANGELOG.md + UPGRADE.md + ARCHITECTURE.md + SKILLS.md + doc cleanup landed together.
-- **Phase 1** — Not started.
+- **Phase 1** — In progress. 1.1 (Ollama timeout/retry/health) done; auto-confirm-on-affirmative + `ask`/`ask_v2` whitelist landed; 1.2 (knowledge freshness) and 1.3 (structured logging) still to do.
 - **Phase 2** — Not started.
 - **Phase 3** — Not started.
 - **Phase 4** — Deferred.

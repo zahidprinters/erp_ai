@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import frappe
 
 from erp_ai.draft_workflow import (
+    confirm_draft,
     create_draft,
     generate_preview,
     get_missing_fields,
@@ -33,6 +34,7 @@ _GUIDED_CLEARED_MARKER = "[GUIDED_CLEARED]"
 
 # Field questions and hints are defined in erp_ai.questions (single source).
 # This module adds a few guided-flow overrides on top of that base catalogue.
+from erp_ai.affirm import is_affirmative, is_negative
 from erp_ai.questions import get_hint, get_question
 
 _DOCTYPE_QUESTIONS: Dict[str, Dict[str, str]] = {
@@ -380,6 +382,51 @@ def _ask_next(session, user, doctype, data, skipped):
     return "%s\n\n%s" % (_so_far(doctype, data), question)
 
 
+
+def _maybe_auto_confirm(session: str, user: str, prompt: str) -> Optional[str]:
+    """If there is a ready guided action and the prompt is an affirmative,
+    confirm the draft and return the confirmation reply. Otherwise return None
+    so the caller can keep the guided flow open.
+
+    This is intentionally narrow:
+    - Only acts on an *active guided session* in the *ready* state.
+    - Only on *clear affirmative* replies. Ambiguous / hedged yeses are not
+      auto-confirmed; the user should reply plainly or use the explicit
+      confirm endpoint.
+    - Only confirms, never submits. A created document still needs its own
+      submit step (handled elsewhere).
+    - Never confirms an expired or already-processed action — that is rejected
+      by ``confirm_draft`` / the action lifecycle guard.
+    """
+    state = load_guided(session, user)
+    if not state:
+        return None
+    if state.get("status") != "ready":
+        return None
+    if is_negative(prompt):
+        # Clear negative: stop the guided flow so it doesn't keep prompting.
+        clear_guided(session, user)
+        return "Okay, I'll leave it for now. Tell me again whenever you're ready."
+    if not is_affirmative(prompt):
+        return None
+    # Affirmative with a ready action — confirm it.
+    try:
+        res = confirm_draft(session=session, user=user)
+    except Exception:
+        return "I tried to create that but ran into an error. Can you try again?"
+    if not res or not res.get("ok"):
+        # confirm_draft returns {"ok": False, "error": "..."} on known failures
+        # (wrong owner, expired, already processed, missing fields, etc.).
+        reason = (res or {}).get("error") or "I could not create that."
+        return reason
+    name = res.get("name") or res.get("docname")
+    doctype = res.get("doctype") or res.get("target_doctype")
+    if not name or not doctype:
+        clear_guided(session, user)
+        return "I created it, but something is missing from the result. Please try again."
+    clear_guided(session, user)
+    return "Created %s %s. What would you like to do next?" % (doctype, name)
+
 def guided_start(session: str, user: str, doctype: str, data: Dict[str, Any]) -> str:
     """Start (or continue) guided collection when a create intent arrives."""
     data = _keep(data)
@@ -399,6 +446,12 @@ def guided_answer(session: str, user: str, prompt: str) -> str:
     state = load_guided(session, user)
     if not state:
         return ""
+
+    # Auto-confirm on affirmative reply when the guided flow is ready.
+    auto = _maybe_auto_confirm(session, user, prompt)
+    if auto is not None:
+        return auto
+
     doctype = state["doctype"]
     data = dict(state.get("data", {}))
     field = state.get("pending_field")
