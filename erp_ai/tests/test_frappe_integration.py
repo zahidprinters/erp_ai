@@ -518,9 +518,15 @@ class TestInfrastructureEndpoints(FrappeTestCase):
             self.assertIn("fresh", src)
 
     def test_citation_for_known_doctype(self):
+        """The citation must be verifiable: source id resolves in the
+        registry, url present, doctype echoed back."""
         res = api_mod.citation_for("Sales Invoice")
-        self.assertTrue(res["citation"])
-        self.assertIn("ERPNext", res["citation"])
+        metadata = res["citation"]
+        self.assertTrue(metadata)
+        self.assertIn("ERPNext", metadata["title"])
+        self.assertEqual(metadata["source_id"], "erpnext_selling")
+        self.assertIn("docs.frappe.io", metadata["url"])
+        self.assertEqual(metadata["doctype"], "Sales Invoice")
 
     def test_audit_history_scoped_to_caller(self):
         session, r = TestAuditConfirmationSecurity._make_customer_draft(self)

@@ -1240,7 +1240,7 @@ def knowledge_freshness():
             "id": s.id, "title": s.title, "source_type": s.source_type,
             "version": s.version, "last_updated": s.last_updated,
             "confidence": s.confidence, "url": s.url, "fresh": s.is_fresh(),
-            "citation": s.citation(),
+            "citation": s.citation(), **s.citation_dict(),
         }
         for s in SOURCES.values()
     ]
@@ -1249,11 +1249,17 @@ def knowledge_freshness():
 
 @frappe.whitelist()
 def citation_for(doctype):
-    """Return the citation for a doctype's knowledge source."""
+    """Return the verifiable citation for a doctype's knowledge source.
+
+    The citation carries source id + url + freshness + excerpt so it can be
+    independently checked; unknown doctypes return ``citation: None`` rather
+    than an invented reference.
+    """
     if not doctype:
         frappe.throw("doctype is required")
-    from erp_ai.knowledge.sources import get_citation_for_doctype
-    return {"doctype": doctype, "citation": get_citation_for_doctype(doctype)}
+    from erp_ai.knowledge.sources import get_citation_metadata_for_doctype
+    metadata = get_citation_metadata_for_doctype(doctype)
+    return {"doctype": doctype, "citation": metadata}
 
 
 @frappe.whitelist()

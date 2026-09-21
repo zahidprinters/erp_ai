@@ -20,6 +20,7 @@ class KnowledgeSource:
     last_updated: str = ""
     confidence: str = "high"  # "high", "medium", "low"
     tags: List[str] = field(default_factory=list)
+    excerpt: str = ""  # short verbatim snippet used for grounding
 
     def is_fresh(self, max_days: int = 90) -> bool:
         """Check if the source is fresh (updated within max_days)."""
@@ -42,7 +43,27 @@ class KnowledgeSource:
             parts.append("v%s" % self.version)
         if self.last_updated:
             parts.append("updated %s" % self.last_updated)
+        if not self.is_fresh():
+            parts.append("[STALE — verify before relying on this]")
         return " ".join(parts)
+
+    def citation_dict(self, doctype: str = None) -> Dict[str, Any]:
+        """Machine-verifiable citation metadata.
+
+        Every field a reviewer needs to confirm the citation points at a real,
+        current source: the registry id, the URL, freshness and a short excerpt.
+        """
+        return {
+            "source_id": self.id,
+            "title": self.title,
+            "source_type": self.source_type,
+            "url": self.url,
+            "version": self.version,
+            "last_updated": self.last_updated,
+            "fresh": self.is_fresh(),
+            "excerpt": self.excerpt[:200] if self.excerpt else "",
+            "doctype": doctype,
+        }
 
 
 SOURCES: Dict[str, KnowledgeSource] = {
@@ -139,10 +160,37 @@ def get_citation_for_doctype(doctype: str) -> str:
     return "ERPNext v15 documentation"
 
 
-def check_freshness() -> Dict[str, list]:
-    """Check all sources for freshness."""
+def get_citation_metadata_for_doctype(doctype: str) -> Optional[Dict[str, Any]]:
+    """Machine-verifiable citation metadata for a doctype's primary source.
+
+    Returns None for unknown doctypes so callers can distinguish "no real
+    source" from a citation — a verifiable citation must never be invented.
+    """
+    sources = find_sources_by_doctype(doctype)
+    if not sources:
+        return None
+    return sources[0].citation_dict(doctype=doctype)
+
+
+def check_freshness(max_days: int = 90) -> Dict[str, Any]:
+    """Check all sources for freshness.
+
+    Returns a stale list, a fresh list, and the set of sources that should be
+    re-indexed (stale ones). ``reindex_required`` is the machine-readable
+    trigger: any consumer (scheduler, endpoint, CI check) can act on it
+    without re-deriving the rule.
+    """
     stale = []
+    fresh = []
     for source in SOURCES.values():
-        if not source.is_fresh():
+        if source.is_fresh(max_days=max_days):
+            fresh.append(source.id)
+        else:
             stale.append(source.id)
-    return {"stale_sources": stale, "total": len(SOURCES)}
+    return {
+        "stale_sources": stale,
+        "fresh_sources": fresh,
+        "total": len(SOURCES),
+        "reindex_required": stale,
+        "stale_count": len(stale),
+    }
