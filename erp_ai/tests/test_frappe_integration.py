@@ -379,7 +379,8 @@ class TestGenericDepartmentExecution(FrappeTestCase):
         """A reply of "yes" while a guided action is in the ready state
         auto-confirms the draft and creates the document."""
         session = _uniq("auto_yes")
-        data = {"item_name": "AutoYes-" + session, "item_group": "Products", "stock_uom": "Nos"}
+        data = {"item_name": "AutoYes-" + session, "item_group": "Products",
+                "stock_uom": "Nos", "standard_rate": 0, "opening_stock": 0}
         reply = guided_start(session=session, user="Administrator", doctype="Item", data=data)
         self.assertIn("Reply yes", reply)
         # The guided flow should now be in ready state.
@@ -401,7 +402,7 @@ class TestGenericDepartmentExecution(FrappeTestCase):
             with self.subTest(prompt=prompt):
                 session = _uniq("auto_var")
                 data = {"item_name": "AutoVar-" + session, "item_group": "Products",
-                        "stock_uom": "Nos"}
+                        "stock_uom": "Nos", "standard_rate": 0, "opening_stock": 0}
                 guided_start(session=session, user="Administrator", doctype="Item", data=data)
                 reply = guided_answer(session=session, user="Administrator", prompt=prompt)
                 self.assertTrue(reply and "Created" in reply, prompt)
@@ -413,7 +414,8 @@ class TestGenericDepartmentExecution(FrappeTestCase):
         """A clear negative while in ready state does NOT confirm; the flow
         is stopped and the draft stays pending."""
         session = _uniq("auto_no")
-        data = {"item_name": "AutoNo-" + session, "item_group": "Products", "stock_uom": "Nos"}
+        data = {"item_name": "AutoNo-" + session, "item_group": "Products",
+                "stock_uom": "Nos", "standard_rate": 0, "opening_stock": 0}
         guided_start(session=session, user="Administrator", doctype="Item", data=data)
         no_reply = guided_answer(session=session, user="Administrator", prompt="no")
         self.assertIn("leave it", no_reply.lower())
@@ -426,7 +428,8 @@ class TestGenericDepartmentExecution(FrappeTestCase):
     def test_non_affirmative_does_not_auto_confirm(self):
         """Ambiguous / non-affirmative replies do not auto-confirm."""
         session = _uniq("auto_neut")
-        data = {"item_name": "AutoNeut-" + session, "item_group": "Products", "stock_uom": "Nos"}
+        data = {"item_name": "AutoNeut-" + session, "item_group": "Products",
+                "stock_uom": "Nos", "standard_rate": 0, "opening_stock": 0}
         guided_start(session=session, user="Administrator", doctype="Item", data=data)
         reply = guided_answer(session=session, user="Administrator", prompt="maybe later")
         # Should not have created the document and should keep the ready state.
@@ -441,7 +444,8 @@ class TestGenericDepartmentExecution(FrappeTestCase):
         """An expired ready action must not be auto-confirmed; the user gets a
         clear refusal and the guided session is cleared."""
         session = _uniq("auto_exp")
-        data = {"item_name": "AutoExp-" + session, "item_group": "Products", "stock_uom": "Nos"}
+        data = {"item_name": "AutoExp-" + session, "item_group": "Products",
+                "stock_uom": "Nos", "standard_rate": 0, "opening_stock": 0}
         guided_start(session=session, user="Administrator", doctype="Item", data=data)
         # Manually expire the underlying action so confirm_draft rejects it.
         draft = get_draft(session=session, user="Administrator")
@@ -455,6 +459,7 @@ class TestGenericDepartmentExecution(FrappeTestCase):
         self.assertTrue(reply)
         self.assertIn("expired", reply.lower())
         self.assertFalse(frappe.db.exists("Item", {"item_name": data["item_name"]}))
+
 
     def test_task_inherits_print_url(self):
         subject = "GenTaskURL " + frappe.generate_hash(length=6)
