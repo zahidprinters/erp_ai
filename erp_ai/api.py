@@ -828,7 +828,10 @@ def workflow_shipment_receipt(data=None):
 		return parsed
 
 	# Save as draft for confirmation
-	draft_id = save_shipment_draft(session, user, parsed.get("data", {}))
+	# The raw NL request is audit evidence: the normalized draft loses the
+	# original wording, so keep it on the action row.
+	raw_text = data.get("text") or data.get("message")
+	draft_id = save_shipment_draft(session, user, parsed.get("data", {}), raw_input=raw_text)
 	if not draft_id:
 		return {"ok": False, "error": "Failed to save draft"}
 
@@ -867,7 +870,8 @@ def workflow_stock_issue(data=None):
 		return {"ok": False, "error": "from_warehouse is required. Please specify the source warehouse."}
 
 	# Save as draft for confirmation
-	draft_id = save_stock_issue_draft(session, user, parsed.get("data", {}))
+	raw_text = data.get("text") or data.get("message")
+	draft_id = save_stock_issue_draft(session, user, parsed.get("data", {}), raw_input=raw_text)
 	if not draft_id:
 		return {"ok": False, "error": "Failed to save draft"}
 
@@ -918,7 +922,7 @@ def handle_stock_issue_nl_request(data):
 	return result
 
 
-def save_shipment_draft(session, user, data):
+def save_shipment_draft(session, user, data, raw_input=None):
 	"""Save a shipment draft for later confirmation.
 
 	Persisted only through the auditable draft store (``AI Assistant Action``).
@@ -948,11 +952,12 @@ def save_shipment_draft(session, user, data):
 		target_doctype="Purchase Receipt",
 		draft_data=draft_data,
 		user=user,
+		raw_input=raw_input,
 	)
 	return draft.get("name") if isinstance(draft, dict) else None
 
 
-def save_stock_issue_draft(session, user, data):
+def save_stock_issue_draft(session, user, data, raw_input=None):
 	"""Save a stock issue draft for later confirmation.
 
 	Persisted only through the auditable draft store (``AI Assistant Action``).
@@ -975,6 +980,7 @@ def save_stock_issue_draft(session, user, data):
 		target_doctype="Stock Entry",
 		draft_data=draft_data,
 		user=user,
+		raw_input=raw_input,
 	)
 	return draft.get("name") if isinstance(draft, dict) else None
 
@@ -1405,6 +1411,88 @@ def audit_history(session=None, limit=50):
 		)
 		return {"records": records}
 	return {"records": get_audit_trail(session, user)}
+
+
+def _require_system_manager(what):
+	"""Guard for the admin-only audit surface (same pattern as the other
+	privileged endpoints)."""
+	if "System Manager" not in frappe.get_roles():
+		frappe.throw(frappe._("Only System Manager can %s") % what, frappe.PermissionError)
+
+
+@frappe.whitelist()
+def pending_actions(older_than_minutes=0, limit=50):
+	"""Admin inbox: pending drafts, optionally only those older than N minutes.
+
+	Answers "what is stuck?": every row is a user-visible draft that was
+	previewed but never confirmed. Newer than N minutes filters out drafts the
+	user is probably still looking at (N=0 lists all pending drafts).
+	"""
+	_require_system_manager("list pending AI actions")
+
+	from frappe.utils import add_to_date, now_datetime
+
+	minutes = max(0, int(older_than_minutes or 0))
+	filters = {"status": "pending"}
+	if minutes:
+		filters["creation"] = ["<", add_to_date(now_datetime(), minutes=-minutes)]
+
+	records = frappe.get_all(
+		"AI Assistant Action",
+		filters=filters,
+		fields=[
+			"name",
+			"user",
+			"session_id",
+			"action",
+			"target_doctype",
+			"status",
+			"raw_input",
+			"llm_provider",
+			"llm_model",
+			"expires_on",
+			"creation",
+			"modified",
+		],
+		# Newest first: the inbox answers "what is stuck now?" and must not
+		# bury a fresh draft under a backlog of stale rows.
+		order_by="creation desc",
+		limit_page_length=max(1, min(int(limit or 50), 200)),
+	)
+	now = now_datetime()
+	for record in records:
+		expires_on = record.get("expires_on")
+		record["expired"] = bool(expires_on and expires_on < now)
+		record["age_minutes"] = int(
+			(now - frappe.utils.get_datetime(record["creation"])).total_seconds() // 60
+		)
+	return {"count": len(records), "older_than_minutes": minutes, "records": records}
+
+
+@frappe.whitelist()
+def cancel_pending_action(action_id, reason=None):
+	"""Admin: close out a stale pending draft (pending -> cancelled).
+
+	A pending draft holds an idempotency key and stays confirmable until it
+	expires, so an operator needs a way to retire one that a user abandoned
+	rather than waiting for the hourly expiry job.
+	"""
+	_require_system_manager("cancel a pending AI action")
+	if not action_id:
+		frappe.throw("action_id is required")
+
+	doc = frappe.get_doc("AI Assistant Action", action_id)
+	if doc.status != "pending":
+		return {
+			"ok": False,
+			"error": "Only a pending action can be cancelled (current status: %s)." % doc.status,
+			"status": doc.status,
+		}
+	doc.status = "cancelled"
+	doc.failure_reason = "Cancelled by %s: %s" % (frappe.session.user, reason or "no reason given")
+	doc.save()
+	frappe.db.commit()
+	return {"ok": True, "name": doc.name, "status": doc.status}
 
 
 @frappe.whitelist()

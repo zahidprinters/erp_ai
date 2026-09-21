@@ -210,7 +210,44 @@ def _supersede(action_name):
 		)
 
 
-def create_draft(session, action, target_doctype, draft_data, user=None):
+def _raw_request_text(draft_data):
+	"""Best-effort raw request text out of a draft payload ("" when absent)."""
+	if isinstance(draft_data, dict):
+		for key in ("request", "text", "prompt"):
+			value = draft_data.get(key)
+			if isinstance(value, str) and value.strip():
+				return value
+	return ""
+
+
+def _model_context():
+	"""Provider/model currently configured, for the audit row.
+
+	Never raises and never blocks a draft: an unconfigured settings row must not
+	stop the user from drafting (Phase 1.1 keeps the runtime honest elsewhere).
+	"""
+	try:
+		from erp_ai.llm import clean_provider_name, configured_model, get_llm_settings
+
+		settings = get_llm_settings()
+		return {
+			"provider": clean_provider_name(settings.llm_provider or "") or "",
+			"model": configured_model(settings) or "",
+		}
+	except Exception:
+		return {"provider": "", "model": ""}
+
+
+def create_draft(
+	session,
+	action,
+	target_doctype,
+	draft_data,
+	user=None,
+	raw_input=None,
+	llm_provider=None,
+	llm_model=None,
+):
 	"""Persist a pending operation to the AI Assistant Action DocType.
 
 	Parameters
@@ -225,6 +262,14 @@ def create_draft(session, action, target_doctype, draft_data, user=None):
 	    Collected document fields to be used at confirmation time.
 	user : str, optional
 	    Authenticated user (defaults to frappe.session.user).
+	raw_input : str, optional
+	    The user's raw request text, when the draft came from free text. Stored
+	    verbatim as audit evidence: the normalized fields live in draft_data, so
+	    without this the original wording is lost.
+	llm_provider / llm_model : str, optional
+	    Model version in play when the draft was created. Defaults to the
+	    currently configured provider/model, so every action records which model
+	    produced it without callers having to pass anything.
 
 	Returns
 	-------
@@ -262,6 +307,9 @@ def create_draft(session, action, target_doctype, draft_data, user=None):
 			"expires_on": expiry.isoformat(),
 			"document_version": 1,
 			"preview_hash": preview_hash,
+			"raw_input": raw_input if raw_input is not None else _raw_request_text(draft_data),
+			"llm_provider": llm_provider or _model_context().get("provider"),
+			"llm_model": llm_model or _model_context().get("model"),
 		}
 	)
 	doc.insert()

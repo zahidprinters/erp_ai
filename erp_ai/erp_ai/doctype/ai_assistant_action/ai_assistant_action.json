@@ -11,9 +11,12 @@
     "target_doctype",
     "target_docname",
     "status",
+    "raw_input",
     "draft_data",
     "nonce",
     "expires_on",
+    "llm_provider",
+    "llm_model",
     "document_version",
     "confirmed_at",
     "preview_hash",
@@ -67,6 +70,12 @@
       "options": "pending\nprocessing\ncompleted\nfailed\nexpired\ncancelled"
     },
     {
+      "fieldname": "raw_input",
+      "fieldtype": "Text",
+      "label": "Raw Input",
+      "description": "The user's raw request text that produced this draft (empty for purely structured flows)."
+    },
+    {
       "fieldname": "draft_data",
       "fieldtype": "Code",
       "label": "Draft Data",
@@ -82,6 +91,19 @@
       "fieldtype": "Datetime",
       "in_list_view": 1,
       "label": "Expires On"
+    },
+    {
+      "fieldname": "llm_provider",
+      "fieldtype": "Data",
+      "in_standard_filter": 1,
+      "label": "LLM Provider",
+      "description": "Provider in use when the draft was created (audit: which model produced this action)."
+    },
+    {
+      "fieldname": "llm_model",
+      "fieldtype": "Data",
+      "label": "LLM Model",
+      "description": "Model in use when the draft was created."
     },
     {
       "fieldname": "document_version",
@@ -135,7 +157,7 @@
   ],
   "index_web_pages_for_search": 0,
   "links": [],
-  "modified": "2026-09-12 00:00:00.000000",
+  "modified": "2026-09-21 00:00:00.000000",
   "modified_by": "Administrator",
   "module": "ERP AI",
   "name": "AI Assistant Action",

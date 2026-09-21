@@ -182,9 +182,7 @@ class TestAuditConfirmationSecurity(FrappeTestCase):
 
 	def test_confirm_rejects_expired(self):
 		session, r = self._make_customer_draft()
-		action = frappe.get_doc("AI Assistant Action", r["name"])
-		action.expires_on = "2020-01-01 00:00:00"
-		action.save()
+		frappe.db.set_value("AI Assistant Action", r["name"], "expires_on", "2020-01-01 00:00:00")
 		frappe.db.commit()
 		res = confirm_draft(session=session, user="Administrator")
 		self.assertTrue(isinstance(res, dict))
@@ -233,6 +231,115 @@ class TestAuditConfirmationSecurity(FrappeTestCase):
 		self.assertIsNotNone(err)
 		self.assertIn("Missing required fields", err)
 		self.assertIn("NTN", err)
+
+
+class TestAuditImmutability(FrappeTestCase):
+	"""Phase 4.2: the action row is evidence — identity fields are write-once
+	and a finished action cannot be modified."""
+
+	def _draft(self, prefix):
+		session = _uniq(prefix)
+		create_draft(
+			session=session,
+			action="create",
+			target_doctype="Task",
+			draft_data={"subject": "Audit " + session},
+			user="Administrator",
+			raw_input="please create task " + session,
+		)
+		return session
+
+	def test_pending_row_identity_is_frozen(self):
+		"""Re-pointing a confirmable draft at another nonce/session/expiry must
+		be rejected: the confirmation binding is the audit evidence."""
+		from frappe.exceptions import ValidationError
+
+		session = self._draft("audit-frozen")
+		name = frappe.get_value("AI Assistant Action", {"session_id": session}, "name")
+		action = frappe.get_doc("AI Assistant Action", name)
+		action.nonce = "forged-nonce"
+		with self.assertRaises(ValidationError):
+			action.save()
+		# The stored row is untouched by the rejected save.
+		self.assertNotEqual(frappe.get_value("AI Assistant Action", name, "nonce"), "forged-nonce")
+
+	def test_terminal_row_is_frozen(self):
+		"""A finished action is an immutable audit record: no field may change
+		after the outcome was recorded."""
+		from frappe.exceptions import ValidationError
+
+		session = self._draft("audit-terminal")
+		res = confirm_draft(session=session, user="Administrator")
+		self.assertTrue(res.get("name"), res)
+		name = frappe.get_value("AI Assistant Action", {"session_id": session}, "name")
+		action = frappe.get_doc("AI Assistant Action", name)
+		action.target_docname = "TAMPERED"
+		with self.assertRaises(ValidationError):
+			action.save()
+		self.assertEqual(frappe.get_value("AI Assistant Action", name, "target_docname"), res["name"])
+
+	def test_audit_records_model_version_and_raw_input(self):
+		"""The row carries which model produced the draft and the user's raw
+		request text — enough context to diagnose a failure after the fact."""
+		session = self._draft("audit-ctx")
+		name = frappe.get_value("AI Assistant Action", {"session_id": session}, "name")
+		action = frappe.get_doc("AI Assistant Action", name)
+		self.assertEqual(action.raw_input, "please create task " + session)
+		# Model context defaults from AI Settings; provider/model are recorded
+		# even when empty (never a blocker for drafting).
+		self.assertIn("llm_provider", action.as_dict())
+		self.assertIn("llm_model", action.as_dict())
+
+
+class TestAdminActionInbox(FrappeTestCase):
+	"""Phase 4.2: an admin can list stuck drafts and retire them."""
+
+	def _draft(self, prefix):
+		session = _uniq(prefix)
+		create_draft(
+			session=session,
+			action="create",
+			target_doctype="Task",
+			draft_data={"subject": "Inbox " + session},
+			user="Administrator",
+		)
+		return session
+
+	def test_pending_actions_lists_and_filters_by_age(self):
+		session = self._draft("inbox")
+		res = api_mod.pending_actions(older_than_minutes=0)
+		names = [rec["name"] for rec in res["records"]]
+		self.assertIn(frappe.get_value("AI Assistant Action", {"session_id": session}, "name"), names)
+		# A 60-minute window excludes a draft created just now.
+		res_old = api_mod.pending_actions(older_than_minutes=60)
+		self.assertNotIn(session, [rec["session_id"] for rec in res_old["records"]])
+
+	def test_pending_actions_requires_system_manager(self):
+		frappe.set_user("Guest")
+		try:
+			with self.assertRaises(frappe.PermissionError):
+				api_mod.pending_actions(older_than_minutes=0)
+		finally:
+			frappe.set_user("Administrator")
+
+	def test_cancel_pending_action(self):
+		session = self._draft("cancel")
+		name = frappe.get_value("AI Assistant Action", {"session_id": session}, "name")
+		res = api_mod.cancel_pending_action(action_id=name, reason="stale test draft")
+		self.assertTrue(res.get("ok"), res)
+		self.assertEqual(res["status"], "cancelled")
+		# A cancelled action is terminal: nothing confirmable remains for the
+		# session and no document is created afterwards.
+		confirm = confirm_draft(session=session, user="Administrator")
+		self.assertFalse(confirm.get("name"), confirm)
+		self.assertFalse(frappe.db.exists("Task", {"subject": "Inbox " + session}))
+
+	def test_cancel_rejects_non_pending(self):
+		session = self._draft("cancel-done")
+		confirm_draft(session=session, user="Administrator")
+		name = frappe.get_value("AI Assistant Action", {"session_id": session}, "name")
+		res = api_mod.cancel_pending_action(action_id=name)
+		self.assertFalse(res.get("ok"), res)
 
 
 class TestShipmentPreviewConfirmCancel(FrappeTestCase):
@@ -519,10 +626,12 @@ class TestGenericDepartmentExecution(FrappeTestCase):
 		# Manually expire the underlying action so confirm_draft rejects it.
 		draft = get_draft(session=session, user="Administrator")
 		self.assertIsNotNone(draft)
-		action = frappe.get_doc("AI Assistant Action", draft["name"])
-		action.status = "pending"
-		action.expires_on = frappe.utils.add_to_date(frappe.utils.now_datetime(), minutes=-5)
-		action.save()
+		frappe.db.set_value(
+			"AI Assistant Action",
+			draft["name"],
+			"expires_on",
+			frappe.utils.add_to_date(frappe.utils.now_datetime(), minutes=-5),
+		)
 		frappe.db.commit()
 		reply = guided_answer(session=session, user="Administrator", prompt="yes")
 		self.assertTrue(reply)

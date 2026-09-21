@@ -423,9 +423,12 @@ class TestPhase2DraftWorkflow(_SkipIfNoDB, unittest.TestCase):
 			user="Administrator",
 		)
 		# Manually expire the action
-		action = frappe.get_doc("AI Assistant Action", draft["name"])
-		action.expires_on = frappe.utils.add_to_date(frappe.utils.now_datetime(), minutes=-1)
-		action.save()
+		frappe.db.set_value(
+			"AI Assistant Action",
+			draft["name"],
+			"expires_on",
+			frappe.utils.add_to_date(frappe.utils.now_datetime(), minutes=-1),
+		)
 		frappe.db.commit()
 
 		result = confirm_draft(
