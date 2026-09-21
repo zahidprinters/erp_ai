@@ -15,12 +15,11 @@ from frappe.tests.utils import FrappeTestCase
 from erp_ai import api as api_mod
 from erp_ai import draft_workflow as draft_workflow_mod
 from erp_ai.conversation import (
-    get_draft,
     guided_answer,
     guided_start,
     load_guided,
 )
-from erp_ai.draft_workflow import confirm_draft, create_draft
+from erp_ai.draft_workflow import confirm_draft, create_draft, get_draft
 from erp_ai.idempotency import check_idempotency, claim_idempotency
 from erp_ai.schema import DOCTYPE_SCHEMAS
 
