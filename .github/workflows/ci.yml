@@ -20,10 +20,20 @@ jobs:
       - name: Install test dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest ruff
+          # ruff is pinned to the same release as .pre-commit-config.yaml so the
+          # local hook and CI can never disagree about the lint config.
+          pip install pytest "ruff==0.16.8"
 
       - name: Ruff lint check (strict — fails on any violation)
         run: ruff check erp_ai/
+
+      - name: Pre-commit hooks (what contributors run)
+        # Same hooks as a local `pre-commit run --all-files`, so CI and the
+        # hook can't disagree. The node-based hooks (prettier/eslint) need a
+        # downloaded Node runtime and are enforced locally.
+        run: |
+          python -m pip install "pre-commit==4.6.2"
+          SKIP=prettier,eslint pre-commit run --all-files --show-diff-on-failure
 
       - name: Syntax check (ast.parse every module)
         run: |

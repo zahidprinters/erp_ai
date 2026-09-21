@@ -25,11 +25,23 @@ Updated: 2026-09-21 (resume)
 - [x] Phase 1.1: Ollama timeout ceiling + retry wrapper + health() reachability (commit d95b4da)
 - [x] Phase 1.1.1: CI fix — ensure erp_ai in apps.txt before bench install-app (commit b85db0b)
 
-### Phase 2 — Voice & latency robustness — in progress
+### Phase 2 — Voice & latency robustness — ✅ DONE
 
 - [x] 2.1 Voice timeout budget across STT → LLM → TTS + clean voice-unavailable surfacing — done
-- [ ] 2.2 Pre-commit + formatting consistency (config exists; wire pre-push enforcement)
+- [x] 2.2 Pre-commit + formatting consistency (pre-commit/pre-push/commit-msg hooks, CI enforcement) — done
 - [x] Fixed `ask_v2` audio path (base64 was never decoded before transcription)
+
+### Phase 3 — Flow-level e2e tests in CI — ✅ DONE
+
+- [x] 3.1 `erp_ai/tests/test_flows_e2e.py`: guided conversation e2e + draft→confirm e2e (idempotent re-confirm) — done
+- [x] 3.2 Workflow hygiene: check-yaml covers the CI workflow, CI runs the same pre-commit hooks — done
+
+### Phase 4 — Scale / multi-model / multi-user (deferred)
+
+### Phase 5 — Maintainer quality-of-life
+
+- [ ] 5.1: Maintain graphify output as a committed artifact
+- [ ] 5.2: Remove doc drift (mostly done in Phase 0)
 
 ### Phase 3 — Flow-level e2e tests in CI (not started)
 - [ ] End-to-end flow tests for the guided draft→confirm→submit cycle

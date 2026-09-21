@@ -146,7 +146,7 @@ Top-level tiers (from the development-audit roadmap):
 | **Acceptance criteria** | - `pre-commit run --all-files` passes. <br>- README / UPGRADE / ROADMAP all lint-clean. |
 | **Effort** | Small |
 | **Risk** | Low |
-| **Status** | 🔲 **Not started** |
+| **Status** | ✅ **Done** — pre-commit + pre-push + commit-msg hooks; repo-wide whitespace/EOF/yaml; commit-msg conventional-subject checker; ruff hook rev aligned to CI's ruff pin (0.16.8); `pre-commit run --all-files` passes; CI runs the same hooks |
 
 ---
 
@@ -165,7 +165,7 @@ Top-level tiers (from the development-audit roadmap):
 | **Acceptance criteria** | - The two tests pass locally on a fresh seeded site and in CI. <br>- README "Testing" section reflects the e2e tests. |
 | **Effort** | Medium |
 | **Risk** | Medium — e2e tests depend on site state; seed carefully (Phase 0 UPGRADE/seed discipline helps). |
-| **Status** | 🔲 **Not started** |
+| **Status** | ✅ **Done** — `erp_ai/tests/test_flows_e2e.py`: guided flow (missing field → next question → ready → created + completed audit action + session cleared) and draft→confirm (document + audit recorded, repeat confirm idempotent, no duplicate); runs in the `frappe-tests` CI job |
 
 ### 3.2 Pre-commit Config and workflow hygiene
 
@@ -178,7 +178,7 @@ Top-level tiers (from the development-audit roadmap):
 | **Acceptance criteria** | - A CI failure on a workflow yml would be caught by pre-commit locally before push. <br>- CI failure-context annotations point at the relevant log. |
 | **Effort** | Small |
 | **Risk** | Low |
-| **Status** | 🔲 **Not started** |
+| **Status** | ✅ **Done** — pre-commit's `check-yaml` covers `.github/workflows/*.yml` (a broken workflow yml fails locally before push); CI runs the same hooks; the failure-context step still tails `/tmp/bench.log`, `/tmp/install.log`, `/tmp/seed.log` |
 
 ---
 
@@ -274,8 +274,8 @@ Top-level tiers (from the development-audit roadmap):
 
 - **Phase 0** — Done. This file + CHANGELOG.md + UPGRADE.md + ARCHITECTURE.md + SKILLS.md + doc cleanup landed together.
 - **Phase 1** — Done. 1.1 (Ollama timeout/retry/health) done; auto-confirm-on-affirmative + `ask`/`ask_v2` whitelist landed; 1.2 (verifiable citations + real freshness with reindex trigger) done; 1.3 (structured error logging with retryable/fatal classification) done.
-- **Phase 2** — Not started.
-- **Phase 3** — Not started.
+- **Phase 2** — Done. 2.1 (voice timeout budget + clean unavailability) and 2.2 (pre-commit/pre-push/commit-msg enforcement) landed.
+- **Phase 3** — Done. 3.1 (flow-level e2e tests in CI) and 3.2 (workflow/pre-commit hygiene) landed.
 - **Phase 4** — Deferred.
 - **Phase 5** — Not started.
 

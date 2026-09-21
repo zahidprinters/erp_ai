@@ -341,12 +341,17 @@ erp_ai/
 │       ├── test_ai_user_behavior.py # logged behavior (open-ended interaction)
 │       ├── test_erp_ai_security.py # live Frappe-backed: permissions, draft/conf,
 │       │                             #   approval limits, ERN integration
+│       ├── test_flows_e2e.py        # flow-level e2e: guided conversation, and
+│       │                             #   draft→confirm + idempotent re-confirm
 │       └── test_frappe_integration.py# live DB: idempotency, audit, shipment
 │                                     # confirm, rollback, permissions
-├── .github/workflows/ci.yml        # CI: lint + syntax + db-free tests (job 1),
-│                                    #    frappe-backed tests with MariaDB+Redis
-│                                    #    + seed (job 2)
+├── .github/workflows/ci.yml        # CI: lint + pre-commit + syntax + db-free
+│                                    #    tests (job 1), frappe-backed tests with
+│                                    #    MariaDB+Redis + seed (job 2)
+├── .github/scripts/check_commit_msg.py # commit-msg hook: conventional subject
 ├── .github/ISSUE_TEMPLATE/         # bug_report.md, feature_request.md
+├── .pre-commit-config.yaml         # pre-commit + pre-push hooks (ruff, ruff-format,
+│                                    #   whitespace/EOF, yaml/json, commit-msg)
 ├── scripts/
 │   ├── sync_workspace.py           # CLI helper to publish a JSON workspace
 ├── templates/                       # freeze to app package convention (empty inits)
@@ -394,9 +399,36 @@ These touch a real Frappe/ERPNext site and cover: permissions, draft→confirm
 pipelines, rollback references, approval limits, supplier/item creation, the
 shipment & stock-issue confirm flows, RBAC enforcement, and live metadata.
 
+**Flow-level end-to-end tests** (`erp_ai/tests/test_flows_e2e.py`) assert the
+user-visible contract on a fresh seeded site:
+
+- *Guided conversation*: starting with no data asks for the missing required
+  field → accepting an answer advances to the next question → skipping the
+  optional follow-ups reaches the ready preview → an affirmative reply creates
+  the document, records a completed audit action and clears the session.
+- *Draft → confirm*: the draft is pending, confirmation creates the document and
+  records the outcome on the audit action, and a repeated confirm is reported as
+  already handled **without** creating a second document.
+
 Each test that needs fresh ERPNext masters (UOM "Nos", Customer Group
 "Individual", Company, Warehouse Types) seeds them itself via
 `erp_ai.tests.ci_seed` if absent.
+
+### Pre-commit hooks
+
+```bash
+pip install pre-commit
+pre-commit install --hook-type pre-commit --hook-type pre-push --hook-type commit-msg
+pre-commit run --all-files
+```
+
+Hooks (also run at push time, so a `--no-verify` commit is still caught):
+trailing-whitespace, end-of-file-fixer, check-ast/json/toml/yaml, check-added-large-files,
+debug-statements, ruff (imports + lint), ruff-format, prettier/eslint for JS, and a
+commit-msg check that the subject is `<type>[(scope)]: subject`.
+
+The ruff hook rev and CI's `ruff==` pin are kept identical, so a config the hook
+accepts is a config CI accepts.
 
 ### CI
 

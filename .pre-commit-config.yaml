@@ -1,6 +1,11 @@
 exclude: 'node_modules|.git'
-default_stages: [pre-commit]
+# Hooks run at commit time AND at push time: CI catches drift, but pre-commit
+# catches it before it becomes a commit (cheaper and local). pre-push also
+# catches the case where a commit was made with --no-verify.
+default_install_hook_types: [pre-commit, pre-push]
+default_stages: [pre-commit, pre-push]
 fail_fast: false
+minimum_pre_commit_version: "3.5.0"
 
 
 repos:
@@ -8,17 +13,25 @@ repos:
     rev: v5.0.0
     hooks:
       - id: trailing-whitespace
-        files: "erp_ai.*"
-        exclude: ".*json$|.*txt$|.*csv|.*md|.*svg"
+        # Repo-wide (not just `erp_ai.*`): docs and the CI workflow are part of
+        # what we lint. Data/serialised files keep their exact bytes.
+        exclude: '\.(json|txt|csv|svg|lock|md)$'
+      - id: end-of-file-fixer
+        exclude: '\.(json|txt|csv|svg|lock|md)$'
       - id: check-merge-conflict
       - id: check-ast
       - id: check-json
       - id: check-toml
       - id: check-yaml
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]
       - id: debug-statements
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.8.1
+    # Pinned to the same ruff release CI installs (see .github/workflows/ci.yml):
+    # a stale hook rev silently disagreed with the lint config (UP045 was
+    # unknown to 0.8.1, so the hook could not parse pyproject.toml at all).
+    rev: v0.16.8
     hooks:
       - id: ruff
         name: "Run ruff import sorter"
@@ -62,6 +75,21 @@ repos:
                 erp_ai/templates/includes/.*|
                 erp_ai/public/js/lib/.*
             )$
+
+  # Commit-message hygiene: the repo's history is conventional-commit style
+  # (feat/fix/ci/docs/chore/test/refactor/perf/build/style/revert), and a
+  # machine-readable subject is what the CHANGELOG and release notes rely on.
+  - repo: local
+    hooks:
+      - id: conventional-commit-subject
+        name: "Commit message: <type>[(scope)]: subject"
+        # `language: script` runs the file directly through its shebang
+        # (#!/usr/bin/env python3): `entry: python …` broke on any box without a
+        # bare `python` on PATH.
+        entry: .github/scripts/check_commit_msg.py
+        language: script
+        stages: [commit-msg]
+        always_run: true
 
 ci:
     autoupdate_schedule: weekly
