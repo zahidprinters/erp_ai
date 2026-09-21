@@ -390,11 +390,26 @@ def _assistant_reply(prompt, session=None, model=None):
 			)
 		except Exception:
 			pass
-		raise
+		# Graceful degradation (Phase 4.3): an unreachable LLM must not surface
+		# as a 500 traceback on the chat surface. The deterministic data answers
+		# above already ran, so the user gets a clear service message and their
+		# session id, and can retry — the failure itself is in the Error Log
+		# with provider/model context and a retryable/fatal class.
+		return _llm_unavailable_reply(session), session
 	_record_behavior(
 		prompt=prompt, session_id=session, intent="llm_chat", outcome="success" if reply else "failed"
 	)
 	return reply, session
+
+
+def _llm_unavailable_reply(session):
+	"""Clean, user-facing degraded-state message for an unreachable LLM."""
+	return (
+		"I can't reach the AI service right now, so I can't answer that from "
+		"memory. Number and list lookups above still work without it — please "
+		"try again in a moment, or ask an administrator to check the LLM "
+		f"runtime (session {session})."
+	)
 
 
 @frappe.whitelist()

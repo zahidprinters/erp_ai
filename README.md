@@ -471,6 +471,18 @@ vulnerabilities.
 
 ## 🩻 Troubleshooting
 
+### Degraded states (what the assistant does when a dependency is down)
+
+| State | What the user sees | Where to look |
+|---|---|---|
+| LLM runtime unreachable / timed out | Chat replies *"I can't reach the AI service right now…"* with the session id; deterministic number/list lookups keep working; voice keeps its own `voice_error` handling | Error Log entry `erp_ai: ask_llm failed` with `context:` (provider, model, session, user) and `class: retryable`/`class: fatal` |
+| A data query fails (permissions, bad filter, DB error) | **No fabricated number** — the request falls through instead of inventing data; if the LLM is also down, the degraded message above is the answer | Error Log entry for the failing query |
+| Knowledge source stale | `citation_for` / `knowledge_freshness` mark it `[STALE]` and list it in `reindex_required` — the degraded state is visible, not silently served as fresh | `erp_ai.api.knowledge_freshness()` |
+| TTS runtime broken | Text answer still returns with a clean `voice_error`; no traceback | Error Log entry `erp_ai: text_to_speech failed` |
+| Abandoned pending drafts | Admin inbox `erp_ai.api.pending_actions(older_than_minutes=N)` lists them (age, expired flag, raw input, model); `cancel_pending_action` retires one | hourly `expire_stale_actions` job also closes them |
+
+Failure-injection tests for all of these run in CI (`TestFailureInjection`).
+
 ### Chat / widget not appearing on the workspace
 1. Hard refresh (`Ctrl+Shift+R`) — assets are cached (hence `?v=4`).
 2. Open DevTools Console; look for `[AI Widget]` logs:

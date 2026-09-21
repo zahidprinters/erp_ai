@@ -1051,6 +1051,11 @@ class TestQueryPermissionScoping(_SkipIfNoDB, unittest.TestCase):
 
 	# -- fixtures ---------------------------------------------------------
 	def _create_fixtures(self):
+		# Get-or-create: a crashed earlier run can leave the fixture User
+		# behind (its cleanup runs in tearDown only), and this suite must
+		# be re-runnable against a dirty site.
+		if frappe.db.exists("User", self.USER):
+			return
 		frappe.get_doc(
 			{
 				"doctype": "User",
@@ -1711,6 +1716,83 @@ class TestChatRouteSmoke(_SkipIfNoDB, unittest.TestCase):
 		with mock.patch("erp_ai.api._aggregate", return_value=None) as agg:
 			self.assertIsNone(api_mod._count("Item", {"bogus_field": ["=", "x"]}))
 		self.assertEqual(agg.call_count, 1)
+
+
+class TestFailureInjection(_SkipIfNoDB, unittest.TestCase):
+	"""Phase 4.3: degraded states must be visible and clean — never fabricated,
+	never a traceback. These inject the failures a production site actually
+	hits (LLM runtime down, DB query failing, stale knowledge) and assert the
+	user-visible outcome."""
+
+	def test_ask_degrades_cleanly_when_llm_unreachable(self):
+		"""Ollama down must answer with a clear service message, not a 500."""
+		import requests
+
+		with (
+			mock.patch("erp_ai.api._data_answer", return_value={"ok": False}),
+			mock.patch("erp_ai.api.ask_llm", side_effect=requests.ConnectionError("connection refused")),
+		):
+			reply = api_mod.ask("hello", session="degraded-conn")
+		self.assertIn("can't reach the AI service", reply)
+		self.assertIn("degraded-conn", reply, "the session id must survive the degradation")
+
+	def test_ask_degrades_cleanly_on_llm_timeout(self):
+		"""A hung LLM is retryable: clean message + retryable class in the log."""
+		import requests
+
+		with (
+			mock.patch("erp_ai.api._data_answer", return_value={"ok": False}),
+			mock.patch("erp_ai.api.ask_llm", side_effect=requests.Timeout("timed out")),
+		):
+			reply = api_mod.ask("hello", session="degraded-timeout")
+		self.assertIn("can't reach the AI service", reply)
+		# Phase 1.3 tie-in: the failure is in the Error Log with a
+		# machine-readable retryable/fatal class and provider/model context.
+		frappe.db.commit()
+		entry = frappe.get_all(
+			"Error Log",
+			filters={"method": "erp_ai: ask_llm failed"},
+			fields=["error"],
+			order_by="creation desc",
+			limit_page_length=1,
+		)
+		self.assertTrue(entry, "structured failure entry missing")
+		self.assertIn("class: retryable", entry[0]["error"])
+		self.assertIn('"session": "degraded-timeout"', entry[0]["error"])
+
+	def test_ask_with_doc_degrades_cleanly(self):
+		doc = mock.MagicMock()
+		df = mock.MagicMock()
+		df.fieldname = "item_code"
+		doc.meta.fields = [df]
+		doc.item_code = "SMOKE-ITEM"
+		import requests
+
+		with (
+			mock.patch("erp_ai.api._resolve", return_value=doc),
+			mock.patch("erp_ai.api._data_answer", return_value={"ok": False}),
+			mock.patch("erp_ai.api.ask_llm", side_effect=requests.ConnectionError("down")),
+		):
+			res = api_mod.ask_with_doc("Item", "SMOKE-ITEM", "what is this?", session="degraded-doc")
+		self.assertIn("can't reach the AI service", res["response"])
+
+	def test_failed_data_query_does_not_fabricate_numbers(self):
+		"""A broken query path must produce NO answer rather than a made-up
+		total: the request falls through instead of inventing data."""
+		with mock.patch("erp_ai.erp_tools._fetch", side_effect=RuntimeError("db down")):
+			res = api_mod._data_answer("how many items do we have?")
+		self.assertFalse(res.get("ok"))
+		self.assertNotIn("answer", res)
+
+	def test_knowledge_degradation_is_visible_not_hidden(self):
+		"""Stale knowledge is flagged for reindex, not silently served as
+		fresh — the operator sees the degraded state in the freshness report."""
+		res = api_mod.knowledge_freshness()
+		self.assertTrue(res["sources"])
+		for src in res["sources"]:
+			self.assertIsInstance(src["fresh"], bool)
+		stale_ids = {src["id"] for src in res["sources"] if not src["fresh"]}
+		self.assertEqual(set(res["reindex_required"]), stale_ids)
 
 
 class TestRouteWhitelistContract(_SkipIfNoDB, unittest.TestCase):
