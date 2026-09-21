@@ -307,6 +307,8 @@ def _assistant_reply(prompt, session=None, model=None):
         raise
     _record_behavior(prompt=prompt, session_id=session, intent="llm_chat",
                      outcome="success" if reply else "failed")
+    return reply, session
+
 
 @frappe.whitelist()
 def ask(prompt, session=None, model=None):
@@ -319,11 +321,12 @@ def ask(prompt, session=None, model=None):
 
 @frappe.whitelist()
 def ask_v2(prompt, session=None, model=None, audio_base64=None):
-    """Assistant v2 entry point.
+    """Dict-returning chat variant ({response, session}) consumed by
+    ``ask_v2_with_voice`` and the Desk widget.
 
     Accepts text and/or audio (base64). When audio is present it is transcribed
     first via the local Whisper path, then the transcribed text is processed.
-    Returns the assistant reply plus the session id so the client can maintain
+    Returns the reply plus the session id so the client can maintain
     conversational memory across stateless HTTP calls.
     """
     if not prompt and not audio_base64:
@@ -335,7 +338,8 @@ def ask_v2(prompt, session=None, model=None, audio_base64=None):
             frappe.throw("Failed to transcribe audio")
         prompt = (prompt + " " if prompt else "") + transcribed
 
-    return ask(prompt=prompt, session=session, model=model)
+    reply, session = _assistant_reply(prompt, session, model)
+    return {"response": reply, "session": session}
 
 
 @frappe.whitelist()
